@@ -5,8 +5,101 @@ if (NOT CMAKE_BUILD_TYPE)
             "Build type options: Debug Release RelWithDebInfo MinSizeRel" FORCE)
 endif ()
 
-include(extern/borealis/cmake/DetectVersion.cmake)
-borealis_detect_version()
+set(DUSK_VERSION_OVERRIDE "" CACHE STRING "Override the detected release identity")
+
+if (DUSK_VERSION_OVERRIDE)
+    set(DUSK_WC_DESCRIBE "${DUSK_VERSION_OVERRIDE}")
+    set(DUSK_WC_REVISION "")
+    set(DUSK_WC_BRANCH "")
+    set(DUSK_WC_DATE "")
+    message(STATUS "Dusklight version overridden to ${DUSK_WC_DESCRIBE}")
+else ()
+    # obtain revision info from git
+    find_package(Git)
+if (GIT_FOUND)
+    # make sure version information gets re-run when the current Git HEAD changes
+    execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} rev-parse --git-path HEAD
+            OUTPUT_VARIABLE dusk_git_head_filename
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dusk_git_head_filename}")
+
+    execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} rev-parse --symbolic-full-name HEAD
+            OUTPUT_VARIABLE dusk_git_head_symbolic
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+    execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            COMMAND ${GIT_EXECUTABLE} rev-parse --git-path ${dusk_git_head_symbolic}
+            OUTPUT_VARIABLE dusk_git_head_symbolic_filename
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+    set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${dusk_git_head_symbolic_filename}")
+
+    # defines DUSK_WC_REVISION
+    execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} rev-parse HEAD
+            OUTPUT_VARIABLE DUSK_WC_REVISION
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+    # defines DUSK_WC_DESCRIBE
+    execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} describe --tags --long --dirty --match "v*" --match "[0-9]*"
+            OUTPUT_VARIABLE DUSK_WC_DESCRIBE
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+
+    # remove the git hash, then collapse a clean "-0" suffix only
+    string(REGEX REPLACE "-[^-]+(-dirty|)$" "\\1" DUSK_WC_DESCRIBE "${DUSK_WC_DESCRIBE}")
+    string(REGEX REPLACE "-0$" "" DUSK_WC_DESCRIBE "${DUSK_WC_DESCRIBE}")
+
+    # defines DUSK_WC_BRANCH
+    execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} rev-parse --abbrev-ref HEAD
+            OUTPUT_VARIABLE DUSK_WC_BRANCH
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+    # defines DUSK_WC_DATE
+    execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} log -1 --format=%ad
+            OUTPUT_VARIABLE DUSK_WC_DATE
+            OUTPUT_STRIP_TRAILING_WHITESPACE)
+else ()
+    message(STATUS "Unable to find git, commit information will not be available")
+endif ()
+endif ()
+
+set(_dusk_version_value "${DUSK_WC_DESCRIBE}")
+string(REGEX REPLACE "^v" "" _dusk_version_value "${_dusk_version_value}")
+if (_dusk_version_value MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)(\\.([0-9]+))?([-+].*)?$")
+    set(_ver_major ${CMAKE_MATCH_1})
+    set(_ver_minor ${CMAKE_MATCH_2})
+    set(_ver_patch ${CMAKE_MATCH_3})
+    set(DUSK_VERSION_REVISION "${CMAKE_MATCH_5}")
+    if (DUSK_VERSION_REVISION STREQUAL "")
+        set(DUSK_VERSION_REVISION "0")
+        if (_dusk_version_value MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+-([0-9]+)(-dirty)?$")
+            set(DUSK_VERSION_REVISION "${CMAKE_MATCH_1}")
+        endif ()
+    endif ()
+    if (DUSK_VERSION_REVISION GREATER 999)
+        message(FATAL_ERROR "Dusklight release revision must be between 0 and 999")
+    endif ()
+    set(DUSK_SHORT_VERSION_STRING "${_ver_major}.${_ver_minor}.${_ver_patch}")
+    set(DUSK_VERSION_STRING "${DUSK_SHORT_VERSION_STRING}.${DUSK_VERSION_REVISION}")
+    # Four-component Android encoding: major*1e8 + minor*1e6 + patch*1e3 + revision.
+    math(EXPR DUSK_VERSION_CODE
+        "${_ver_major} * 100000000 + ${_ver_minor} * 1000000 + ${_ver_patch} * 1000 + ${DUSK_VERSION_REVISION}")
+else ()
+    set(DUSK_WC_DESCRIBE "UNKNOWN-VERSION")
+    set(DUSK_VERSION_STRING "0.0.0.0")
+    set(DUSK_SHORT_VERSION_STRING "0.0.0")
+    set(DUSK_VERSION_REVISION "0")
+    set(DUSK_VERSION_CODE "1")
+endif ()
+
+# Add version information to CI environment variables
+if(DEFINED ENV{GITHUB_ENV})
+    file(APPEND "$ENV{GITHUB_ENV}" "DUSK_VERSION=${DUSK_WC_DESCRIBE}\n")
+    file(APPEND "$ENV{GITHUB_ENV}" "DUSK_VERSION_CODE=${DUSK_VERSION_CODE}\n")
+endif()
+message(STATUS "Dusklight version set to ${DUSK_WC_DESCRIBE}")
+set(BOREALIS_APP_DESCRIBE "${DUSK_WC_DESCRIBE}")
+set(BOREALIS_APP_VERSION "${DUSK_VERSION_STRING}")
+set(BOREALIS_APP_SHORT_VERSION "${DUSK_SHORT_VERSION_STRING}")
+set(BOREALIS_APP_VERSION_CODE "${DUSK_VERSION_CODE}")
+set(BOREALIS_APP_REVISION "${DUSK_WC_REVISION}")
+set(BOREALIS_APP_BRANCH "${DUSK_WC_BRANCH}")
+set(BOREALIS_APP_DATE "${DUSK_WC_DATE}")
 message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
 project(dusklight LANGUAGES C CXX VERSION ${BOREALIS_APP_VERSION})
 
@@ -78,6 +171,10 @@ add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
 target_compile_definitions(aurora_mtx PRIVATE MTX_USE_PS=1)
 
 add_subdirectory(extern/borealis EXCLUDE_FROM_ALL)
+if (NOT CMAKE_CROSSCOMPILING)
+    enable_testing()
+    add_subdirectory(tests)
+endif ()
 
 add_subdirectory(libs/freeverb)
 
@@ -93,6 +190,8 @@ option(DUSK_PACKAGE_INSTALL "Install Dusklight with a Linux-native file structur
 option(DUSK_GFX_DEBUG_GROUPS "Report debug groups to the native graphics API" ${DUSK_GFX_DEBUG_GROUPS_DEFAULT})
 option(DUSK_ENABLE_CODE_MODS "Enable code mods" ON)
 option(DUSK_ENABLE_OPUS "Enable loading Opus audio files for mods" OFF)
+option(DUSK_PHONE_SPIKE "Build the phone-companion-display network spike (see docs/phone-companion-design.md); throwaway, off by default" OFF)
+option(DUSK_PHONE_SPIKE_STATE "Add the phone-companion state-streaming fast path (hearts/rupees/keys/items as small diffs instead of rendered frames); requires DUSK_PHONE_SPIKE, off by default" OFF)
 
 
 set(DUSK_HAS_FUNCHOOK OFF)
@@ -180,6 +279,7 @@ include(FetchContent)
 message(STATUS "dusklight: Fetching miniz")
 FetchContent_Declare(miniz
     URL https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip
+    URL_HASH SHA256=ada38db0b703a56d3dd6d57bf84a9c5d664921d870d8fea4db153979fb5332c5
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     EXCLUDE_FROM_ALL
 )
@@ -190,8 +290,18 @@ FetchContent_Declare(picosha2
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE
     EXCLUDE_FROM_ALL
 )
-
 set(_fetch_content_deps miniz picosha2)
+
+if (DUSK_PHONE_SPIKE)
+    message(STATUS "dusklight: Fetching QR-Code-generator (phone spike pairing)")
+    FetchContent_Declare(qrcodegen
+        URL https://github.com/nayuki/QR-Code-generator/archive/refs/tags/v1.8.0.tar.gz
+        URL_HASH SHA256=2ec0a4d33d6f521c942eeaf473d42d5fe139abcfa57d2beffe10c5cf7d34ae60
+        DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+        EXCLUDE_FROM_ALL
+    )
+    list(APPEND _fetch_content_deps qrcodegen)
+endif ()
 
 if (DUSK_ENABLE_OPUS)
     message(STATUS "dusklight: Fetching opusfile")
@@ -287,6 +397,12 @@ if (DUSK_ENABLE_OPUS)
     list(APPEND GAME_LIBS OpusFile::opusfile)
     list(APPEND GAME_COMPILE_DEFS DUSK_OPUS=1)
 endif ()
+if (DUSK_PHONE_SPIKE)
+    list(APPEND GAME_COMPILE_DEFS DUSK_PHONE_SPIKE=1)
+endif ()
+if (DUSK_PHONE_SPIKE_STATE)
+    list(APPEND GAME_COMPILE_DEFS DUSK_PHONE_SPIKE_STATE=1)
+endif ()
 
 if (WIN32)
     list(APPEND GAME_LIBS Ws2_32)
@@ -364,7 +480,11 @@ if (ENABLE_ASAN)
     target_sources(dusk_internal PRIVATE src/dusk/asan_options.c)
 endif ()
 target_compile_definitions(dusk_internal PRIVATE ${GAME_COMPILE_DEFS})
-target_include_directories(dusk_internal PRIVATE ${miniz_SOURCE_DIR})
+target_include_directories(dusk_internal PRIVATE ${GAME_INCLUDE_DIRS} ${miniz_SOURCE_DIR})
+if (DUSK_PHONE_SPIKE)
+    target_sources(dusk_internal PRIVATE ${qrcodegen_SOURCE_DIR}/c/qrcodegen.c)
+    target_include_directories(dusk_internal PRIVATE ${qrcodegen_SOURCE_DIR}/c)
+endif ()
 target_link_libraries(dusk_internal PRIVATE aurora::main ${GAME_LIBS} ${JSYSTEM_LIBRARIES})
 target_precompile_headers(dusk_internal PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_SOURCE_DIR}/include/dusk_pch.hpp>")
 
@@ -376,7 +496,7 @@ endif ()
 borealis_configure_android_application(dusklight)
 
 target_compile_definitions(dusklight PRIVATE ${GAME_COMPILE_DEFS})
-target_include_directories(dusklight PRIVATE ${miniz_SOURCE_DIR})
+target_include_directories(dusklight PRIVATE ${GAME_INCLUDE_DIRS} ${miniz_SOURCE_DIR})
 target_link_libraries(dusklight PRIVATE dusk_internal aurora::main ${GAME_LIBS} ${JSYSTEM_LINK_LIBRARIES})
 target_precompile_headers(dusklight PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_SOURCE_DIR}/include/dusk_pch.hpp>")
 
@@ -720,3 +840,11 @@ foreach (target IN LISTS BINARY_TARGETS)
 endforeach ()
 
 install_bundled_mods()
+
+# Host-side unit tests. Off when cross-compiling (an Android build has no host
+# to run them on), and off unless aurora brought gtest in with it.
+option(DUSK_BUILD_TESTS "Build dusklight host-side unit tests" ON)
+if (DUSK_BUILD_TESTS AND NOT CMAKE_CROSSCOMPILING)
+    enable_testing()
+    add_subdirectory(tests)
+endif ()

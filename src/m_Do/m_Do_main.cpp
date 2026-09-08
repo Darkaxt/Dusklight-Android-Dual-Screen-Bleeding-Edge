@@ -642,6 +642,9 @@ int game_main(int argc, char* argv[]) {
     log_build_info();
 
     dusk::config::load_from_user_preferences();
+    // One-shot migrations for configs written by older builds — before the
+    // cvar overrides so an explicit command-line value still wins.
+    dusk::runConfigMigrations();
     ApplyCVarOverrides(parsed_arg_options["cvar"]);
     borealis::sentry::Options sentryOptions{
         .release = fmt::format("{}@{}", dusk::AppInfo.appName, BOREALIS_APP_DESCRIBE),

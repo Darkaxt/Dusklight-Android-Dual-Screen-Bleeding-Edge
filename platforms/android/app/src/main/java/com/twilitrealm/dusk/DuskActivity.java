@@ -23,10 +23,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.pm.ApplicationInfo;
 import android.database.Cursor;
+import android.graphics.Point;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.SystemClock;
 import android.os.Environment;
 import android.provider.DocumentsContract;
 import android.provider.OpenableColumns;
@@ -46,14 +46,14 @@ import java.io.OutputStream;
 public class DuskActivity extends BorealisActivity {
     private static final String TAG = "DuskActivity";
     private static final float DEFAULT_SURFACE_FRAME_RATE = 60.0f;
-    /**
-     * Companion render buffer for a bottom panel: 8:7 at 1080p, the AYN Thor's
-     * native landscape size. Used directly by the Presentation, and as the
-     * fallback in DuskCompanionActivity when a panel will not report its size.
-     */
-    static final int COMPANION_PANEL_W = 1240;
-    static final int COMPANION_PANEL_H = 1080;
+    private static final int FOLDER_DIALOG_REQUEST_CODE = 0x4455;
+    private static final int MANAGE_STORAGE_REQUEST_CODE = 0x4456;
+    private static final String EXTERNAL_STORAGE_AUTHORITY =
+        "com.android.externalstorage.documents";
+    private long folderDialogUserdata = 0;
+    private boolean awaitingManageStoragePermission = false;
 
+    private static native void nativeFolderDialogResult(long userdata, String path, String error);
     private static native void nativeAuxSurfaceChanged(Surface surface, int width, int height);
     private static native void nativeCompanionTouchEvent(int action, float u, float v);
     private static native void nativeCompanionPinch(float factor);
@@ -71,12 +71,11 @@ public class DuskActivity extends BorealisActivity {
     private BroadcastReceiver auxBatteryReceiver;
     private BroadcastReceiver screenshotReceiver;
     private AuxPresentation auxPresentation;
-    // When startActivity() for the companion was issued, or 0 when none is
-    // outstanding. A timestamp rather than a flag so a launch that never lands
-    // can expire — see companionLaunchPending(). Written on the UI thread, read
-    // there too: the companion's onCreate runs on the same main looper, as both
-    // live in this process.
-    private long companionLaunchPendingAt;
+    // True between an accepted companion launch and its lifecycle callback.
+    // Both activities live in this process and run these callbacks on the main
+    // looper, so an explicit state transition prevents duplicate launches
+    // without guessing how long Android should take to create the window.
+    private boolean companionLaunchPending;
     private String lastDisplayScan;
     // Display the companion last presented on; preferred on every re-pick so an
     // attached TV cannot steal it across a pause/resume. -1 = none yet.
@@ -91,7 +90,6 @@ public class DuskActivity extends BorealisActivity {
         // app and tears down both surfaces, which is our main crash source.
         getWindow().addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         hideSystemBars();
-        installStickyImmersive();
         initAuxDisplay();
         initBatteryMonitor();
         initScreenshotReceiver();
@@ -188,38 +186,12 @@ public class DuskActivity extends BorealisActivity {
         }
     }
 
-    /**
-     * How long a companion launch may stay outstanding before we assume it is
-     * never arriving and allow another attempt.
-     *
-     * Without an expiry, a launch the system accepts and then silently drops
-     * leaves the pending flag set forever: showAuxPresentation() refuses to
-     * retry, native has already been told there is no second screen, and the
-     * player gets no companion for the rest of the session with nothing in the
-     * log to say why. The Thor has already shown one firmware quirk in this
-     * area, so this is not hypothetical.
-     */
-    private static final long COMPANION_LAUNCH_TIMEOUT_MS = 5000L;
-
-    /** True while a companion launch is outstanding and still plausibly alive. */
-    private boolean companionLaunchPending() {
-        if (companionLaunchPendingAt == 0) {
-            return false;
-        }
-        if (SystemClock.uptimeMillis() - companionLaunchPendingAt < COMPANION_LAUNCH_TIMEOUT_MS) {
-            return true;
-        }
-        Log.w(TAG, "Companion launch never landed; allowing another attempt");
-        companionLaunchPendingAt = 0;
-        return false;
-    }
-
     private void dismissAux() {
         dismissAuxPresentation();
         // Swapped, the companion is an activity in its own task, so Android
         // will not tear it down with ours — it has to be finished explicitly,
         // or it survives as a stray window on the main screen.
-        companionLaunchPendingAt = 0;
+        companionLaunchPending = false;
         DuskCompanionActivity companion = DuskCompanionActivity.instance;
         if (companion != null) {
             DuskCompanionActivity.instance = null;
@@ -478,7 +450,7 @@ public class DuskActivity extends BorealisActivity {
     static void onCompanionActivityChanged() {
         DuskActivity self = instance;
         if (self != null) {
-            self.companionLaunchPendingAt = 0;
+            self.companionLaunchPending = false;
             self.reportDualScreenAvailable();
         }
     }
@@ -490,7 +462,7 @@ public class DuskActivity extends BorealisActivity {
     // hidden for a companion that no longer exists.
     private void showAuxPresentation() {
         if (auxDisplayManager != null && auxPresentation == null &&
-            DuskCompanionActivity.instance == null && !companionLaunchPending())
+            DuskCompanionActivity.instance == null && !companionLaunchPending)
         {
             Display target = pickAuxDisplay();
             if (target != null && target.getDisplayId() == Display.DEFAULT_DISPLAY) {
@@ -523,14 +495,12 @@ public class DuskActivity extends BorealisActivity {
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
         ActivityOptions options = ActivityOptions.makeBasic();
         options.setLaunchDisplayId(displayId);
+        companionLaunchPending = true;
         try {
             startActivity(intent, options.toBundle());
-            // instance is not set until the companion's own onCreate runs, so
-            // without this the next showAuxPresentation() — onResume fires one
-            // almost immediately — would see "no companion" and start a second.
-            companionLaunchPendingAt = SystemClock.uptimeMillis();
             Log.i(TAG, "Companion activity started on display " + displayId);
         } catch (RuntimeException e) {
+            companionLaunchPending = false;
             // Same fallback as the launcher: no companion is survivable, a dead
             // game is not. reportDualScreenAvailable() (our caller) then tells
             // native there is no second screen, and the HUD stays on the game.
@@ -541,7 +511,7 @@ public class DuskActivity extends BorealisActivity {
     // The companion surface, hosted by the Presentation below — or, when the
     // game itself has been launched onto the second screen, by
     // DuskCompanionActivity on the main one.
-    static SurfaceView createCompanionSurfaceView(Context context, int bufW, int bufH) {
+    static SurfaceView createCompanionSurfaceView(Context context, Point bufferSize) {
         SurfaceView surfaceView = new SurfaceView(context);
         // The buffer's shape decides the companion's shape: computeAuxCanvas()
         // derives the dashboard's logical canvas from the surface aspect, and
@@ -549,7 +519,9 @@ public class DuskActivity extends BorealisActivity {
         // content window taking whatever is left). So this is where "the
         // companion is 8:7" is actually decided — pass the host panel's own
         // size and the dashboard lays itself out to fit it.
-        surfaceView.getHolder().setFixedSize(bufW, bufH);
+        if (bufferSize != null && bufferSize.x > 0 && bufferSize.y > 0) {
+            surfaceView.getHolder().setFixedSize(bufferSize.x, bufferSize.y);
+        }
         surfaceView.getHolder().addCallback(new SurfaceHolder.Callback() {
             @Override
             public void surfaceCreated(SurfaceHolder holder) {}
@@ -601,6 +573,36 @@ public class DuskActivity extends BorealisActivity {
         return surfaceView;
     }
 
+    /**
+     * Returns a render buffer with the host display's aspect ratio, scaled into
+     * the range supported by computeAuxCanvas(). If Android cannot provide a
+     * valid display size, null leaves SurfaceView free to use its measured size.
+     */
+    @SuppressWarnings("deprecation")  // getRealSize(), no API 26 equivalent
+    static Point companionBufferSize(Display display) {
+        if (display == null) {
+            return null;
+        }
+        Point size = new Point();
+        try {
+            display.getRealSize(size);
+        } catch (Throwable t) {
+            return null;
+        }
+        if (size.x <= 0 || size.y <= 0) {
+            return null;
+        }
+        double scale = 1.0;
+        scale = Math.min(scale, 2048.0 / Math.max(size.x, size.y));
+        scale = Math.max(scale, 320.0 / Math.min(size.x, size.y));
+        final int width = (int)Math.round(size.x * scale);
+        final int height = (int)Math.round(size.y * scale);
+        if (width < 320 || height < 320 || width > 2048 || height > 2048) {
+            return null;
+        }
+        return new Point(width, height);
+    }
+
     private static final class AuxPresentation extends Presentation {
         AuxPresentation(Context context, Display display) {
             super(context, display);
@@ -623,8 +625,8 @@ public class DuskActivity extends BorealisActivity {
             // was never told to hide its bars, so the navigation bar sat on top
             // of the companion.
             applyImmersive(getWindow());
-            setContentView(
-                createCompanionSurfaceView(getContext(), COMPANION_PANEL_W, COMPANION_PANEL_H));
+            setContentView(createCompanionSurfaceView(
+                getContext(), companionBufferSize(getDisplay())));
             // Take the whole panel, including the strip the navigation bar
             // would occupy. Hiding the bars stops them being DRAWN but the
             // content frame is still inset for them, so the companion was laid
@@ -666,36 +668,6 @@ public class DuskActivity extends BorealisActivity {
             // (e.g. OLED burn-in protection) disappears.
             showAuxPresentation();
         }
-    }
-
-    /**
-     * Re-hides the bars a moment after anything brings them back.
-     *
-     * <p>SDLActivity already has this idea (rehideSystemUi +
-     * onSystemUiVisibilityChange) but both halves are dead at targetSdk 30+:
-     * setSystemUiVisibility is a no-op and the visibility callback no longer
-     * fires. So nothing re-hid the bars once they appeared, and
-     * hideSystemBars() only runs on create/resume/focus-change -- a transient
-     * bar does not change focus. That is the gesture pill turning up mid-play.
-     *
-     * <p>Delayed by 2s, matching SDL's original, so it does not fight the
-     * deliberate swipe-to-reveal.
-     */
-    private final Runnable reHideBars = () -> applyImmersive(getWindow());
-
-    private void installStickyImmersive() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
-            return;  // SDL's own path still works below R
-        }
-        final View decor = getWindow().getDecorView();
-        decor.setOnApplyWindowInsetsListener((v, insets) -> {
-            if (insets.isVisible(WindowInsets.Type.systemBars())) {
-                v.removeCallbacks(reHideBars);
-                v.postDelayed(reHideBars, 2000);
-            }
-            // Chain preserved: SDL lays its surface out from these insets.
-            return v.onApplyWindowInsets(insets);
-        });
     }
 
     private void hideSystemBars() {

@@ -296,7 +296,7 @@ public final class DuskGuideBrowser {
                     // has built its article body, and saving 400ms later
                     // captured a page with one paragraph and two images. Wait
                     // for the DOM to stop growing instead.
-                    waitForSettle(host, 0, 0, sSettleGen);
+                    waitForSettle(host, 0, sSettleGen);
                 }
             }
         });
@@ -327,7 +327,7 @@ public final class DuskGuideBrowser {
         sRoot = root;
         sWebView = web;
         // The WebView has just taken focus; put the bars back.
-        root.postDelayed(() -> reapplyImmersive(host), 100);
+        root.post(() -> reapplyImmersive(host));
         web.loadUrl(startUrl == null || startUrl.isEmpty()
                 ? "https://www.zeldadungeon.net/twilight-princess-walkthrough/"
                 : startUrl);
@@ -482,17 +482,13 @@ public final class DuskGuideBrowser {
      *
      * <p>Generic on purpose: "content has arrived" is not something a fixed
      * timeout can know, and every site defers differently. Two consecutive
-     * identical sizes means it has settled; the attempt cap stops a page that
-     * animates forever from hanging the crawl.
+     * identical sizes means it has settled. The delayed callback is only a
+     * monitoring heartbeat; completion is driven by the observed DOM state and
+     * has no attempt deadline.
      */
-    private static void waitForSettle(final Activity host, final int attempt, final int lastLen,
-            final int gen) {
+    private static void waitForSettle(final Activity host, final int lastLen, final int gen) {
         if (sWebView == null || sQueueAt < 0 || gen != sSettleGen) {
             return;  // closed, or superseded by a newer load of this page
-        }
-        if (attempt > 25) {  // ~10s, then take what we have
-            savePage(host, true);
-            return;
         }
         sWebView.evaluateJavascript(
                 "(function(){return ''+(document.body?document.body.innerHTML.length:0);})();",
@@ -518,7 +514,7 @@ public final class DuskGuideBrowser {
                         return;  // closed while polling
                     }
                     sWebView.postDelayed(
-                            () -> waitForSettle(host, attempt + 1, captured, gen), 400);
+                            () -> waitForSettle(host, captured, gen), 400);
                 });
     }
 

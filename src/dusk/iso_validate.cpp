@@ -27,6 +27,10 @@ const char* verification_state_name(dusk::DiscVerificationState state) noexcept 
 namespace dusk::iso {
 namespace {
 
+// Multiple revisions of a disc are represented as separate entries sharing a
+// gameId with different .revision values (see RZDE01 below) — this is what
+// used to need a hand-rolled multi-hash-per-id array; borealis::disc's
+// {gameId, revision} matching handles it natively.
 constexpr auto AcceptedDiscs = std::to_array<borealis::disc::AcceptedDisc>({
     {
         .gameId = "GZ2E01",
@@ -120,6 +124,26 @@ ValidationError validate(const char* path, VerificationStatus& status, DiscInfo&
     const auto result = borealis::disc::verify(
         path == nullptr ? std::string_view{} : std::string_view{path}, DiscCatalog, &status);
     update_info(result, info);
+    if (result.status == borealis::disc::Status::HashMismatch) {
+        // borealis::disc doesn't hand back the computed hash on a mismatch
+        // (it's an internal-reconstruction detail, not part of its public
+        // API), but acceptedDiscIndex is still set to the {gameId, revision}
+        // entry that almost matched — logged so a player with an otherwise
+        // legitimate dump has something to report rather than a silent
+        // "works fine, trust me." Verification is advisory either way — a
+        // mismatch does not block launch.
+        if (result.acceptedDiscIndex.has_value()) {
+            const auto& expected = AcceptedDiscs[*result.acceptedDiscIndex];
+            DuskLog.warn("Disc hash mismatch for {} (rev {}): dump doesn't match the known-good "
+                         "hash on file for this game/revision; the game will still run",
+                expected.gameId, expected.revision);
+        } else {
+            DuskLog.warn(
+                "Disc hash mismatch for {}: dump doesn't match any known-good hash; the game "
+                "will still run",
+                result.metadata.gameId);
+        }
+    }
     return validation_error(result.status);
 }
 

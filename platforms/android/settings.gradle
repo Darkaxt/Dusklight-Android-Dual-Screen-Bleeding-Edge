@@ -16,3 +16,13 @@ dependencyResolutionManagement {
 
 rootProject.name = "dusklight-android"
 include ':app'
+
+def externalBuildRoot = System.getenv('DUSK_ANDROID_BUILD_ROOT')
+if (externalBuildRoot) {
+    gradle.beforeProject { project ->
+        def relativeProject = project.path == ':'
+            ? 'root'
+            : project.path.substring(1).replace(':', File.separator)
+        project.layout.buildDirectory.set(new File(externalBuildRoot, relativeProject))
+    }
+}

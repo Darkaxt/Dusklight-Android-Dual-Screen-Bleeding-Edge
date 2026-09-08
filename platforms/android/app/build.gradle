@@ -3,25 +3,73 @@ plugins {
 }
 
 def duskRepoDir = rootProject.projectDir.parentFile.parentFile
-def borealisDir = new File(duskRepoDir, 'extern/borealis')
+def versionProperties = new Properties()
+def versionFile = rootProject.file('version.properties')
+if (!versionFile.isFile()) {
+    throw new GradleException("Missing Android version manifest: ${versionFile}")
+}
+versionFile.withInputStream { versionProperties.load(it) }
+def upstreamVersion = versionProperties.getProperty('upstreamVersion')
+def portRevisionText = versionProperties.getProperty('portRevision')
+def versionNameStr = versionProperties.getProperty('versionName')
+def versionCodeText = versionProperties.getProperty('versionCode')
+def releaseTag = versionProperties.getProperty('releaseTag')
+if (!(upstreamVersion ==~ /\d+\.\d+\.\d+/) || !(portRevisionText ==~ /\d+/) ||
+    !(versionNameStr ==~ /\d+\.\d+\.\d+\.\d+/) || !(versionCodeText ==~ /\d+/) ||
+    releaseTag != versionNameStr) {
+    throw new GradleException('version.properties contains an invalid or inconsistent release identity')
+}
+def upstreamParts = upstreamVersion.tokenize('.')*.toInteger()
+def portRevision = portRevisionText.toInteger()
+def versionCodeInt = versionCodeText.toInteger()
+def expectedVersionName = "${upstreamVersion}.${portRevision}"
+def expectedVersionCode = upstreamParts[0] * 100000000 + upstreamParts[1] * 1000000 +
+    upstreamParts[2] * 1000 + portRevision
+if (versionNameStr != expectedVersionName || versionCodeInt != expectedVersionCode) {
+    throw new GradleException(
+        "version.properties must encode ${expectedVersionName}/${expectedVersionCode}")
+}
+def requestedVersion = System.getenv('DUSK_VERSION')
+def requestedVersionCode = System.getenv('DUSK_VERSION_CODE')
+def requestedTag = System.getenv('GIT_TAG')
+if ((requestedVersion && requestedVersion.replaceFirst('^v', '') != versionNameStr) ||
+    (requestedVersionCode && requestedVersionCode != versionCodeText) ||
+    (requestedTag && requestedTag.replaceFirst('^v', '') != releaseTag)) {
+    throw new GradleException('Environment release identity does not match version.properties')
+}
+def releaseAbis = (System.getenv('DUSK_ANDROID_RELEASE_ABIS') ?: 'arm64-v8a')
+    .split(',')*.trim().findAll { !it.isEmpty() }
+if (releaseAbis != ['arm64-v8a']) {
+    throw new GradleException("Unsupported or duplicate release ABI contract: ${releaseAbis}")
+}
 
+def nativeBuildDir = System.getenv('DUSK_ANDROID_NATIVE_BUILD_DIR')
+    ? new File(System.getenv('DUSK_ANDROID_NATIVE_BUILD_DIR'))
+    : new File(duskRepoDir, 'build/android-arm64')
+def nativePropertiesFile = System.getenv('DUSK_ANDROID_NATIVE_PROPERTIES')
+    ? new File(System.getenv('DUSK_ANDROID_NATIVE_PROPERTIES'))
+    : new File(nativeBuildDir, 'borealis-android.properties')
+if (!nativePropertiesFile.isFile()) {
+    throw new GradleException("Missing native Android properties: ${nativePropertiesFile}")
+}
+def nativeProperties = new Properties()
+nativePropertiesFile.withInputStream { nativeProperties.load(it) }
+if (nativeProperties.getProperty('borealis.versionName')?.replaceFirst('^v', '') != versionNameStr ||
+    nativeProperties.getProperty('borealis.versionCode') != versionCodeText ||
+    nativeProperties.getProperty('borealis.androidAbi') != 'arm64-v8a') {
+    throw new GradleException('Native build identity does not match version.properties')
+}
+
+def borealisDir = new File(duskRepoDir, 'extern/borealis')
 ext.borealisAndroid = [
     borealisDir: borealisDir,
-    propertiesFile: new File(duskRepoDir, 'build/android-arm64/borealis-android.properties'),
+    propertiesFile: nativePropertiesFile,
     namespace: 'dev.twilitrealm.dusk',
     applicationId: 'dev.twilitrealm.dusk',
-    abis: ['arm64-v8a'],
+    abis: releaseAbis,
     assets: [
-        [
-            from: new File(duskRepoDir, 'res'),
-            into: 'res',
-            excludes: ['**/.DS_Store']
-        ],
-        [
-            from: new File(duskRepoDir, 'build/android-arm64/bundled_mods'),
-            into: 'mods',
-            includes: ['*.dusk']
-        ]
+        [from: new File(duskRepoDir, 'res'), into: 'res', excludes: ['**/.DS_Store']],
+        [from: new File(nativeBuildDir, 'bundled_mods'), into: 'mods', includes: ['*.dusk']]
     ],
     proguardRules: file('proguard-rules.pro')
 ]

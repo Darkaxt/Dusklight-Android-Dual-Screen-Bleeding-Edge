@@ -1,57 +1,44 @@
 # Android Shell
 
-This directory contains Dusklight's Android shell built on top of Borealis.
+This directory contains the Borealis/SDL Android app wrapper for Dusklight.
 
 ## Prerequisites
 
-- Android SDK with Platform 37 installed (`ANDROID_HOME`)
+- Android SDK installed (`ANDROID_HOME`)
 - Android NDK version used by CMake presets (`ANDROID_NDK_VERSION`)
-- JDK 17+
+- JDK 21
 
 Example:
 
 ```bash
 export ANDROID_HOME="$HOME/Android/Sdk"
 export ANDROID_NDK_VERSION="29.0.14206865"
-export JAVA_HOME="/usr/lib/jvm/java-17-openjdk"
+export JAVA_HOME="/usr/lib/jvm/java-21-openjdk"
 ```
 
-## Build Native Libraries
+## Reproducible release build (Windows)
+
+```powershell
+.\scripts\android\Build-AndroidRelease.ps1 `
+  -OutputRoot D:\Temp\dusklight-release
+```
+
+The script keeps native, Gradle, JNI-staging, and APK outputs outside the source
+tree. It compiles the exact production ABI, `arm64-v8a`, and derives the numeric
+identity from `version.properties`.
+The output remains unsigned until it passes the shared signing worker's
+Normalize gate.
+
+## Refresh SDL Java shim (optional)
+
+If you update SDL and want to refresh the embedded Java shim files:
 
 ```bash
-cmake --preset android-arm64
-cmake --build --preset android-arm64
+./android/scripts/sync-sdl-java.sh
 ```
 
-This build produces `build/android-arm64/libmain.so`
+## Verify an APK
 
-## Build APK
-
-```bash
-cd platforms/android
-./gradlew :app:assembleDebug
-```
-
-Output APK:
-
-- `app/build/outputs/apk/debug/app-arm64-v8a-debug.apk`
-
-Aurora needs a hardware-backed graphics adapter. If an AVD has GPU
-acceleration disabled, launch it with `-gpu host`.
-
-## Launch With Runtime Args (adb)
-
-You can pass command-line args through the activity intent:
-
-```bash
-adb shell am start -n dev.twilitrealm.dusk/.DuskActivity \
-  --es borealis_args "--backend vulkan"
-```
-
-Supported extras:
-
-- `borealis_args`: single shell-like argument string
-- `borealis_argv`: string-array argv
-
-The legacy `dusk_args` and `dusk_argv` names remain accepted during the shell
-transition.
+`scripts/android/Verify-AndroidApk.ps1` checks the package, numeric version,
+exact ABI set, ZIP and ELF 16 KiB alignment, signature and signer when required,
+SHA-256, and the complete APK path set for prohibited game/user payloads.

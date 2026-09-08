@@ -3,11 +3,17 @@
 #include <borealis/app_info.hpp>
 
 namespace dusk {
-    /** Application identity fields for Borealis modules */
+    /**
+     * Application identity fields for Borealis modules.
+     *
+     * githubOwner/githubRepo are deliberately separate from orgName: that one
+     * is a file-path identity and must not change, while these track
+     * whichever fork ships the build (the startup update check queries them).
+     */
     inline constexpr borealis::AppInfo AppInfo{
         .orgName = "TwilitRealm",
         .appName = "Dusklight",
-        .githubOwner = "TwilitRealm",
+        .githubOwner = "igawa6",
         .githubRepo = "dusklight",
         .discordApplicationId = "1495632471994405035",
     };
@@ -18,5 +24,10 @@ namespace dusk {
      * This gets used for file paths and such, and cannot be changed!
      */
     constexpr auto AppName = "Dusklight";
+
+    /**
+     * Previous AppName to migrate data from.
+     */
+    constexpr auto LegacyAppName = "Dusk";
 
 }
