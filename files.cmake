@@ -1444,6 +1444,28 @@ set(DUSK_FILES
         src/dusk/http/http.hpp
         src/dusk/io.cpp
         src/dusk/layout.cpp
+        src/dusk/android_aux_display.cpp
+        include/dusk/companion.h
+        src/dusk/companion.cpp
+        src/dusk/companion_internal.h
+        src/dusk/companion_strings.h
+        src/dusk/companion_strings.cpp
+        src/dusk/guide/convert.cpp
+        src/dusk/guide/store.cpp
+        src/dusk/guide/fetch.cpp
+        src/dusk/guide/image.cpp
+        src/dusk/guide/browser.cpp
+        src/dusk/companion_guide.cpp
+        src/dusk/companion_hud.cpp
+        src/dusk/companion_functional.cpp
+        src/dusk/companion_gfx.cpp
+        src/dusk/companion_icons.cpp
+        src/dusk/companion_touch.cpp
+        src/dusk/companion_pages.cpp
+        src/dusk/companion_collect.cpp
+        src/dusk/companion_dmap.cpp
+        include/dusk/dualscreen.h
+        src/dusk/dualscreen.cpp
         src/dusk/logging.cpp
         src/dusk/settings.cpp
         src/dusk/speedrun.cpp
@@ -1454,6 +1476,8 @@ set(DUSK_FILES
         src/dusk/touch_camera.cpp
         src/dusk/update_check.cpp
         src/dusk/update_check.hpp
+        src/dusk/release_version.cpp
+        include/dusk/release_version.hpp
         #src/dusk/m_Do_ext_dusk.cpp
         src/dusk/imgui/ImGuiConfig.hpp
         src/dusk/imgui/ImGuiConsole.hpp

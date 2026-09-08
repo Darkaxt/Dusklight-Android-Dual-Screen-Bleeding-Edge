@@ -6,6 +6,7 @@
 #include "controller_config.hpp"
 #include "dusk/livesplit.h"
 #include "dusk/settings.h"
+#include "dusk/dualscreen.h"
 #include "dusk/speedrun.h"
 #include "fmt/format.h"
 #include "magic_enum.hpp"
@@ -50,6 +51,8 @@ constexpr std::array<std::pair<const char*, const char*>, 3> kAutoSaveLayers{{
 constexpr auto kMenuNotificationDuration = std::chrono::milliseconds(2500);
 
 constexpr std::array<const char*, 4> kFpsCorners = {"tl", "tr", "bl", "br"};
+// The stylesheet anchors 'b*' corners with `bottom`, 't*' with `top`.
+constexpr bool fpsCornerIsBottom(int idx) { return kFpsCorners[idx][0] == 'b'; }
 
 Rml::Element* create_toast(Rml::Element* parent, const Toast& toast) {
     if (toast.type == "autosave") {
@@ -235,8 +238,17 @@ void Overlay::update() {
     }
 
     if (mFpsCounter != nullptr) {
-        if (getSettings().video.enableFpsOverlay.getValue()) {
-            const int idx = getSettings().video.fpsOverlayCorner.getValue();
+        const int cornerIdx = getSettings().video.fpsOverlayCorner.getValue();
+        // Index 4 = Companion: the second screen draws the counter instead.
+        // "Companion" only takes the counter away when a companion is really
+        // there; otherwise fall back to a screen corner rather than hiding it
+        // with no way for the user to get it back.
+        const bool drawnOnCompanion = cornerIdx == dusk::kFpsCornerCompanion &&
+            dusk::dualscreen::hudOnCompanion();
+        if (getSettings().video.enableFpsOverlay.getValue() && !drawnOnCompanion) {
+            const int idx = cornerIdx >= 0 &&
+                    cornerIdx < static_cast<int>(kFpsCorners.size())
+                ? cornerIdx : 0;
             mFpsCounter->SetAttribute("open", "");
             mFpsCounter->SetAttribute("corner", kFpsCorners[idx]);
 

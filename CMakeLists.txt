@@ -5,13 +5,10 @@ if (NOT CMAKE_BUILD_TYPE)
             "Build type options: Debug Release RelWithDebInfo MinSizeRel" FORCE)
 endif ()
 
-set(DUSK_VERSION_OVERRIDE "" CACHE STRING "Override version string (skips git detection and format validation)")
+set(DUSK_VERSION_OVERRIDE "" CACHE STRING "Override the detected release identity")
 
 if (DUSK_VERSION_OVERRIDE)
     set(DUSK_WC_DESCRIBE "${DUSK_VERSION_OVERRIDE}")
-    set(DUSK_VERSION_STRING "0.0.0.0")
-    set(DUSK_SHORT_VERSION_STRING "0.0.0")
-    set(DUSK_VERSION_CODE "1")
     set(DUSK_WC_REVISION "")
     set(DUSK_WC_BRANCH "")
     set(DUSK_WC_DATE "")
@@ -40,7 +37,7 @@ if (GIT_FOUND)
             OUTPUT_VARIABLE DUSK_WC_REVISION
             OUTPUT_STRIP_TRAILING_WHITESPACE)
     # defines DUSK_WC_DESCRIBE
-    execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} describe --tags --long --dirty --match "v*"
+    execute_process(WORKING_DIRECTORY ${CMAKE_SOURCE_DIR} COMMAND ${GIT_EXECUTABLE} describe --tags --long --dirty --match "v*" --match "[0-9]*"
             OUTPUT_VARIABLE DUSK_WC_DESCRIBE
             OUTPUT_STRIP_TRAILING_WHITESPACE)
 
@@ -59,34 +56,35 @@ if (GIT_FOUND)
 else ()
     message(STATUS "Unable to find git, commit information will not be available")
 endif ()
+endif ()
 
-if (DUSK_WC_DESCRIBE MATCHES "^v([0-9]+)\\.([0-9]+)\\.([0-9]+)([-+].*)?$")
-    set(DUSK_SHORT_VERSION_STRING "${CMAKE_MATCH_1}.${CMAKE_MATCH_2}.${CMAKE_MATCH_3}")
+set(_dusk_version_value "${DUSK_WC_DESCRIBE}")
+string(REGEX REPLACE "^v" "" _dusk_version_value "${_dusk_version_value}")
+if (_dusk_version_value MATCHES "^([0-9]+)\\.([0-9]+)\\.([0-9]+)(\\.([0-9]+))?([-+].*)?$")
     set(_ver_major ${CMAKE_MATCH_1})
     set(_ver_minor ${CMAKE_MATCH_2})
     set(_ver_patch ${CMAKE_MATCH_3})
-    set(DUSK_VERSION_TWEAK "0")
-    if (DUSK_WC_DESCRIBE MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+-([0-9]+)(-dirty)?$")
-        set(DUSK_VERSION_TWEAK "${CMAKE_MATCH_1}")
-    elseif (DUSK_WC_DESCRIBE MATCHES "^v[0-9]+\\.[0-9]+\\.[0-9]+-[0-9A-Za-z.-]+-([0-9]+)(-dirty)?$")
-        set(DUSK_VERSION_TWEAK "${CMAKE_MATCH_1}")
+    set(DUSK_VERSION_REVISION "${CMAKE_MATCH_5}")
+    if (DUSK_VERSION_REVISION STREQUAL "")
+        set(DUSK_VERSION_REVISION "0")
+        if (_dusk_version_value MATCHES "^[0-9]+\\.[0-9]+\\.[0-9]+-([0-9]+)(-dirty)?$")
+            set(DUSK_VERSION_REVISION "${CMAKE_MATCH_1}")
+        endif ()
     endif ()
-    set(DUSK_VERSION_STRING "${DUSK_SHORT_VERSION_STRING}.${DUSK_VERSION_TWEAK}")
-    if(DUSK_VERSION_TWEAK GREATER 999)
-        set(_tweak 999)
-    else()
-        set(_tweak ${DUSK_VERSION_TWEAK})
-    endif()
-    # encoding: major*1e7 + minor*1e5 + patch*1e3 + tweak; collision-free for major<210, minor<100, patch<100, tweak<=999
+    if (DUSK_VERSION_REVISION GREATER 999)
+        message(FATAL_ERROR "Dusklight release revision must be between 0 and 999")
+    endif ()
+    set(DUSK_SHORT_VERSION_STRING "${_ver_major}.${_ver_minor}.${_ver_patch}")
+    set(DUSK_VERSION_STRING "${DUSK_SHORT_VERSION_STRING}.${DUSK_VERSION_REVISION}")
+    # Four-component Android encoding: major*1e8 + minor*1e6 + patch*1e3 + revision.
     math(EXPR DUSK_VERSION_CODE
-        "${_ver_major} * 10000000 + ${_ver_minor} * 100000 + ${_ver_patch} * 1000 + ${_tweak}")
+        "${_ver_major} * 100000000 + ${_ver_minor} * 1000000 + ${_ver_patch} * 1000 + ${DUSK_VERSION_REVISION}")
 else ()
     set(DUSK_WC_DESCRIBE "UNKNOWN-VERSION")
     set(DUSK_VERSION_STRING "0.0.0.0")
     set(DUSK_SHORT_VERSION_STRING "0.0.0")
+    set(DUSK_VERSION_REVISION "0")
     set(DUSK_VERSION_CODE "1")
-endif ()
-
 endif ()
 
 # Add version information to CI environment variables
@@ -161,6 +159,11 @@ set(AURORA_ENABLE_CARD ON CACHE BOOL "Enable CARD API support" FORCE)
 set(AURORA_ENABLE_RMLUI ON CACHE BOOL "Enable RmlUi UI support" FORCE)
 add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
 target_compile_definitions(aurora_mtx PRIVATE MTX_USE_PS=1)
+
+if (NOT CMAKE_CROSSCOMPILING)
+    enable_testing()
+    add_subdirectory(tests)
+endif ()
 
 add_subdirectory(libs/freeverb)
 
@@ -299,7 +302,14 @@ FetchContent_Declare(json
     URL_HASH SHA256=42f6e95cad6ec532fd372391373363b62a14af6d771056dbfc86160e6dfff7aa
     DOWNLOAD_EXTRACT_TIMESTAMP FALSE
 )
-FetchContent_MakeAvailable(cxxopts json)
+message(STATUS "dusklight: Fetching miniz")
+FetchContent_Declare(miniz
+    URL https://github.com/richgel999/miniz/releases/download/3.0.2/miniz-3.0.2.zip
+    URL_HASH SHA256=ada38db0b703a56d3dd6d57bf84a9c5d664921d870d8fea4db153979fb5332c5
+    DOWNLOAD_EXTRACT_TIMESTAMP TRUE
+    EXCLUDE_FROM_ALL
+)
+FetchContent_MakeAvailable(cxxopts json miniz)
 
 if (DUSK_ENABLE_SENTRY_NATIVE)
     message(STATUS "dusklight: Fetching sentry-native")
@@ -509,7 +519,7 @@ if (CMAKE_CXX_LINK_GROUP_USING_RESCAN_SUPPORTED OR CMAKE_LINK_GROUP_USING_RESCAN
     set(JSYSTEM_LINK_LIBRARIES "$<LINK_GROUP:RESCAN,${JSYSTEM_LIBRARIES}>")
 endif ()
 
-set(DUSK_FILES src/dusk/main.cpp ${GAME_BASE_FILES} ${GAME_DEBUG_FILES})
+set(DUSK_FILES src/dusk/main.cpp ${GAME_BASE_FILES} ${GAME_DEBUG_FILES} ${miniz_SOURCE_DIR}/miniz.c)
 if(ANDROID)
     add_library(dusklight SHARED ${DUSK_FILES})
     set_target_properties(dusklight PROPERTIES OUTPUT_NAME main)
@@ -521,7 +531,7 @@ if (ENABLE_ASAN)
 endif ()
 
 target_compile_definitions(dusklight PRIVATE ${GAME_COMPILE_DEFS})
-target_include_directories(dusklight PRIVATE ${GAME_INCLUDE_DIRS})
+target_include_directories(dusklight PRIVATE ${GAME_INCLUDE_DIRS} ${miniz_SOURCE_DIR})
 target_link_libraries(dusklight PRIVATE aurora::main ${GAME_LIBS} ${JSYSTEM_LINK_LIBRARIES})
 target_precompile_headers(dusklight PRIVATE "$<$<COMPILE_LANGUAGE:CXX>:${CMAKE_SOURCE_DIR}/include/dusk_pch.hpp>")
 if (TARGET crashpad_handler)

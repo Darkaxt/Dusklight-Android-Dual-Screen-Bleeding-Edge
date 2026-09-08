@@ -1,5 +1,6 @@
 #include "prelaunch.hpp"
 
+#include "dusk/app_info.hpp"
 #include "dusk/config.hpp"
 #include "dusk/data.hpp"
 #include "dusk/file_select.hpp"
@@ -128,7 +129,8 @@ struct UpdateCheckTask {
     UpdateCheckTask() {
         worker = std::thread([this] {
             try {
-                result = update_check::check_latest_github_release("TwilitRealm", "dusklight");
+                result = update_check::check_latest_github_release(
+                    dusk::UpdateRepoOwner, dusk::UpdateRepoName);
             } catch (const std::exception& e) {
                 result = {
                     .status = update_check::Status::Failed,
@@ -295,8 +297,9 @@ std::string get_error_msg(iso::ValidationError error) {
         return "Disc verification was canceled. Dusklight cannot guarantee the selected disc "
                "image is compatible.";
     case iso::ValidationError::HashMismatch:
-        return "The selected disc image did not pass hash verification. It may be corrupt or "
-               "modified.";
+        return "This disc image is not on the known-good list. That usually just means it is a "
+               "disc revision we have not catalogued yet — it will still run. If it misbehaves, "
+               "it may also be a modified or corrupt dump.";
     case iso::ValidationError::Success:
         return "The selected disc image is valid.";
     }

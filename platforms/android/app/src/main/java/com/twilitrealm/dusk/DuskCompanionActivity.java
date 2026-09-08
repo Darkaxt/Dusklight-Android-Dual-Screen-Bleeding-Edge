@@ -2,7 +2,6 @@ package dev.twilitrealm.dusk;
 
 import android.app.Activity;
 import android.graphics.Color;
-import android.graphics.Point;
 import android.os.Bundle;
 import android.util.Log;
 import android.view.InputDevice;
@@ -55,8 +54,8 @@ public class DuskCompanionActivity extends Activity {
             DuskActivity.applyImmersive(getWindow());
             getWindow().getDecorView().setBackgroundColor(Color.BLACK);
 
-            final Point buffer = companionBufferSize(getDisplayCompat());
-            setContentView(DuskActivity.createCompanionSurfaceView(this, buffer.x, buffer.y));
+            setContentView(DuskActivity.createCompanionSurfaceView(
+                this, DuskActivity.companionBufferSize(getDisplayCompat())));
             // Edge to edge, for the reason the Presentation consumes insets:
             // hiding the bars stops them being drawn but the content frame is
             // still inset for them, leaving a band the companion never fills.
@@ -93,46 +92,6 @@ public class DuskCompanionActivity extends Activity {
             }
         }
         return getWindowManager().getDefaultDisplay();
-    }
-
-    /**
-     * The companion's render buffer, shaped like the panel it is being shown
-     * on. Swapped, that panel is the main screen — 16:9 on an AYN Thor rather
-     * than the bottom screen's 8:7 — and the dashboard follows: side columns
-     * keep their widths and the content window and its tabs take the extra
-     * room. Letterboxing an 8:7 buffer here instead would waste a third of the
-     * screen on black bars.
-     */
-    @SuppressWarnings("deprecation")  // getRealSize(), no API 26 equivalent
-    private static Point companionBufferSize(Display display) {
-        final Point fallback =
-            new Point(DuskActivity.COMPANION_PANEL_W, DuskActivity.COMPANION_PANEL_H);
-        if (display == null) {
-            return fallback;
-        }
-        Point size = new Point();
-        try {
-            display.getRealSize(size);
-        } catch (Throwable t) {
-            return fallback;
-        }
-        if (size.x <= 0 || size.y <= 0) {
-            return fallback;
-        }
-        // computeAuxCanvas() renders 1:1 into this buffer only while both
-        // dimensions are within 320..2048; outside that it drops to a 2x
-        // supersample of the logical canvas, which is blurrier than the panel.
-        // Scale the panel's aspect into range rather than handing over a size
-        // that quietly costs sharpness.
-        double scale = 1.0;
-        scale = Math.min(scale, 2048.0 / Math.max(size.x, size.y));
-        scale = Math.max(scale, 320.0 / Math.min(size.x, size.y));
-        final int w = (int)Math.round(size.x * scale);
-        final int h = (int)Math.round(size.y * scale);
-        if (w < 320 || h < 320 || w > 2048 || h > 2048) {
-            return fallback;  // an aspect too extreme to satisfy both bounds
-        }
-        return new Point(w, h);
     }
 
     /**

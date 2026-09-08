@@ -8,6 +8,22 @@
   </p>
 </div>
 
+# Android Dual-Screen Bleeding Edge
+
+This repository is an **unofficial Android dual-screen port**. It is based on
+the official Dusklight `v1.4.1` release and adapts the dual-screen work from
+igawa6's `v1.4.1-ds-2.7` release. It is not produced, supported, or endorsed by
+TwilitRealm or igawa6.
+
+The Android build can move the HUD, map, items, collection screens, guide, and
+touch controls to a companion display. Wii U-style and Nintendo 3DS-style
+layouts, display swapping, per-display dimming, animation, controller actions,
+and ordinary Dusklight save behavior are preserved. The companion surface uses
+the real secondary-display dimensions instead of assuming a particular device.
+
+See [Android provenance](docs/android/PROVENANCE.md) for the exact commits,
+deliberate integration changes, version identity, and verification contract.
+
 # Overview
 
 Dusklight is a reverse-engineered reimplementation of Twilight Princess.
@@ -45,6 +61,17 @@ Currently, only the GameCube USA and EUR releases are supported. Support for oth
 - Launch Dusklight
 - Press **Select Disc Image** and provide the path to your supported game dump
 - Press **Play**!
+
+The port accepts user-owned GameCube USA or EUR `.iso` and `.rvz` dumps, as the
+official project does. No game image, save, texture pack, or downloaded guide is
+included in the source tree or release APK.
+
+> [!WARNING]
+> Version `1.4.1.1` establishes a new persistent signing identity for this
+> unofficial package. Android will not treat an installation signed by another
+> project as an in-place update even though the package name is unchanged.
+> Preserve your saves and uninstall the differently signed build before the
+> one-time migration. Later releases from this repository can update normally.
 
 # Building
 

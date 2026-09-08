@@ -43,7 +43,25 @@ enum dMeter2Info_UseButton {
     METER2_USEBUTTON_R = 0x40,
 
     METER2_USEBUTTON_Z = 0x800,
+
+#if TARGET_PC
+    // The companion's slot buttons (item buttons 2/3). Free bit values —
+    // the retail set above tops out at Z.
+    METER2_USEBUTTON_S1 = 0x1000,
+    METER2_USEBUTTON_S2 = 0x2000,
+#endif
 };
+
+#if TARGET_PC
+// Use-button bit for item button i (0 = X, 1 = Y, 2/3 = slots I/II) — the
+// retail `METER2_USEBUTTON_X << i` form collides with METER2_USEBUTTON_C at
+// i = 2.
+inline u16 dMeter2Info_useButtonBitForItemBtn(int i_btn) {
+    static const u16 bits[4] = {METER2_USEBUTTON_X, METER2_USEBUTTON_Y,
+        METER2_USEBUTTON_S1, METER2_USEBUTTON_S2};
+    return bits[i_btn & 3];
+}
+#endif
 
 class dMeter2Info_c {
 public:
@@ -70,6 +88,11 @@ public:
     void getString(u32 i_stringID, TEXT_SPAN o_string, JMSMesgEntry_c* i_msgEntry);
     void getStringKana(u32 i_stringID, TEXT_SPAN o_string, JMSMesgEntry_c* i_msgEntry);
     void getStringKanji(u32 i_stringID, TEXT_SPAN o_string, JMSMesgEntry_c* i_msgEntry);
+#ifdef TARGET_PC
+    // Companion reader fetch: uncapped, resolves name tags, emits 0x02+idx
+    // markers for controller-button tags (see d_meter2_info.cpp).
+    void getStringFull(u32 i_stringID, char* o_string, int i_cap, int i_xyButton = 0);
+#endif
     f32 getStringLength(J2DTextBox* i_textbox, char* i_string);
     f32 getStringLength(JUTFont* i_font, f32 param_2, f32 param_3, char* i_string);
     void onDirectUseItem(int);
@@ -359,6 +382,13 @@ inline void dMeter2Info_getStringKanji(u32 i_stringID, TEXT_SPAN o_string, JMSMe
 inline void dMeter2Info_getStringKana(u32 i_stringID, TEXT_SPAN o_string, JMSMesgEntry_c* i_msgEntry) {
     g_meter2_info.getStringKana(i_stringID, o_string, i_msgEntry);
 }
+
+#ifdef TARGET_PC
+inline void dMeter2Info_getStringFull(u32 i_stringID, char* o_string, int i_cap,
+    int i_xyButton = 0) {
+    g_meter2_info.getStringFull(i_stringID, o_string, i_cap, i_xyButton);
+}
+#endif
 
 inline f32 dMeter2Info_getStringLength(JUTFont* i_font, f32 param_2, f32 param_3, char* i_string) {
     return g_meter2_info.getStringLength(i_font, param_2, param_3, i_string);

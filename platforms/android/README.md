@@ -16,33 +16,20 @@ export ANDROID_NDK_VERSION="29.0.14206865"
 export JAVA_HOME="/usr/lib/jvm/java-17-openjdk"
 ```
 
-## Build Native Libraries
+## Reproducible release build (Windows)
 
-```bash
-cmake --preset android-arm64
-cmake --build --preset android-arm64
-
-cmake --preset android-x86_64
-cmake --build --preset android-x86_64
+```powershell
+.\scripts\android\Build-AndroidRelease.ps1 `
+  -OutputRoot D:\Temp\dusklight-release
 ```
 
-These builds produce:
+The script keeps native, Gradle, JNI-staging, and APK outputs outside the source
+tree. It compiles the exact production ABI, `arm64-v8a`, and derives the numeric
+identity from `version.properties`.
+The output remains unsigned until it passes the shared signing worker's
+Normalize gate.
 
-- `build/android-arm64/Binaries/libmain.so`
-- `build/android-x86_64/Binaries/libmain.so`
-
-## Stage Libraries Into APK Project
-
-```bash
-./android/scripts/stage-jni-libs.sh
-```
-
-This copies:
-
-- `libmain.so` -> `android/app/src/main/jniLibs/arm64-v8a/`
-- `libmain.so` -> `android/app/src/main/jniLibs/x86_64/`
-
-## Refresh SDL Java Shim (Optional)
+## Refresh SDL Java shim (optional)
 
 If you update SDL and want to refresh the embedded Java shim files:
 
@@ -50,27 +37,8 @@ If you update SDL and want to refresh the embedded Java shim files:
 ./android/scripts/sync-sdl-java.sh
 ```
 
-## Build APK
+## Verify an APK
 
-```bash
-cd android
-./gradlew :app:assembleDebug
-```
-
-Output APK:
-
-- `android/app/build/outputs/apk/debug/app-debug.apk`
-
-## Launch With Runtime Args (adb)
-
-You can pass command-line args through the activity intent:
-
-```bash
-adb shell am start -n dev.twilitrealm.dusk/.DuskActivity \
-  --es dusk_args "--backend vulkan"
-```
-
-Supported extras:
-
-- `dusk_args`: single shell-like argument string
-- `dusk_argv`: string-array argv
+`scripts/android/Verify-AndroidApk.ps1` checks the package, numeric version,
+exact ABI set, ZIP and ELF 16 KiB alignment, signature and signer when required,
+SHA-256, and the complete APK path set for prohibited game/user payloads.

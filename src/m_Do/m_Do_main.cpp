@@ -552,6 +552,7 @@ int game_main(int argc, char* argv[]) {
     log_build_info();
 
     dusk::config::LoadFromUserPreferences();
+    dusk::runConfigMigrations();
     if (dusk::getSettings().game.speedrunMode) {
         dusk::resetForSpeedrunMode();
     }

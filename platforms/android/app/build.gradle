@@ -3,38 +3,48 @@ plugins {
 }
 
 def duskRepoDir = rootProject.projectDir.parentFile.parentFile
-
-// Version: env override first (CI / release scripts), else derived from the
-// nearest v<A>.<B>.<C>-ds-<X>.<Y>[.<Z>] git tag. The old hardcoded fallback
-// (0.1.0 / 100000) shipped once by accident: the 2.1 release was built
-// without the env vars, got versionCode 100000 < 2.0's 1040120, and Android
-// refused it as a downgrade on every updated device.
-// Code scheme: AABBCCXYZ (e.g. v1.4.1-ds-2.1.1 -> 10401211), strictly above
-// every code shipped under the old AABBCCXY scheme (2.0 -> 1040120).
-def gitDescribe = ""
-try {
-    def proc = ["git", "-C", duskRepoDir.absolutePath, "describe", "--tags", "--match", "v*-ds-*"].execute()
-    proc.waitFor()
-    if (proc.exitValue() == 0) {
-        gitDescribe = proc.in.text.trim()
-    }
-} catch (ignored) {
+def versionProperties = new Properties()
+def versionFile = rootProject.file('version.properties')
+if (!versionFile.isFile()) {
+    throw new GradleException("Missing Android version manifest: ${versionFile}")
 }
-def derivedName = "0.1.0"
-def derivedCode = 100000
-def tagMatch = gitDescribe =~ /^v(\d+)\.(\d+)\.(\d+)-ds-(\d+)\.(\d+)(?:\.(\d+))?/
-if (tagMatch.find()) {
-    def a = tagMatch.group(1).toInteger()
-    def b = tagMatch.group(2).toInteger()
-    def c = tagMatch.group(3).toInteger()
-    def x = tagMatch.group(4).toInteger()
-    def y = tagMatch.group(5).toInteger()
-    def z = tagMatch.group(6) != null ? tagMatch.group(6).toInteger() : 0
-    derivedCode = ((((a * 100 + b) * 100 + c) * 100 + x * 10 + y) * 10) + z
-    derivedName = gitDescribe.replaceFirst("^v", "")
+versionFile.withInputStream { versionProperties.load(it) }
+def upstreamVersion = versionProperties.getProperty('upstreamVersion')
+def portRevisionText = versionProperties.getProperty('portRevision')
+def versionNameStr = versionProperties.getProperty('versionName')
+def versionCodeText = versionProperties.getProperty('versionCode')
+def releaseTag = versionProperties.getProperty('releaseTag')
+if (!(upstreamVersion ==~ /\d+\.\d+\.\d+/) || !(portRevisionText ==~ /\d+/) ||
+    !(versionNameStr ==~ /\d+\.\d+\.\d+\.\d+/) || !(versionCodeText ==~ /\d+/) ||
+    releaseTag != versionNameStr) {
+    throw new GradleException('version.properties contains an invalid or inconsistent release identity')
 }
-def versionNameStr = (System.getenv("DUSK_VERSION") ?: "v" + derivedName).replaceFirst("^v", "")
-def versionCodeInt = (System.getenv("DUSK_VERSION_CODE") ?: derivedCode.toString()).toInteger()
+def upstreamParts = upstreamVersion.tokenize('.')*.toInteger()
+def portRevision = portRevisionText.toInteger()
+def versionCodeInt = versionCodeText.toInteger()
+def expectedVersionName = "${upstreamVersion}.${portRevision}"
+def expectedVersionCode = upstreamParts[0] * 100000000 + upstreamParts[1] * 1000000 +
+    upstreamParts[2] * 1000 + portRevision
+if (versionNameStr != expectedVersionName || versionCodeInt != expectedVersionCode) {
+    throw new GradleException(
+        "version.properties must encode ${expectedVersionName}/${expectedVersionCode}")
+}
+def requestedVersion = System.getenv('DUSK_VERSION')
+def requestedVersionCode = System.getenv('DUSK_VERSION_CODE')
+def requestedTag = System.getenv('GIT_TAG')
+if ((requestedVersion && requestedVersion.replaceFirst('^v', '') != versionNameStr) ||
+    (requestedVersionCode && requestedVersionCode != versionCodeText) ||
+    (requestedTag && requestedTag.replaceFirst('^v', '') != releaseTag)) {
+    throw new GradleException('Environment release identity does not match version.properties')
+}
+def releaseAbis = (System.getenv('DUSK_ANDROID_RELEASE_ABIS') ?: 'arm64-v8a')
+    .split(',')*.trim().findAll { !it.isEmpty() }
+def supportedAbis = ['arm64-v8a', 'x86_64'] as Set
+if (releaseAbis.isEmpty() || releaseAbis.toSet().size() != releaseAbis.size() ||
+    !supportedAbis.containsAll(releaseAbis)) {
+    throw new GradleException("Unsupported or duplicate release ABI contract: ${releaseAbis}")
+}
+def externalJniLibs = System.getenv('DUSK_ANDROID_JNI_LIBS_DIR')
 def duskGeneratedAssetsDir = layout.buildDirectory.dir('generated/assets/dusklight').get().asFile
 def syncDuskAssets = tasks.register('syncDuskAssets', Sync) {
     from(new File(duskRepoDir, 'res')) {
@@ -68,7 +78,7 @@ android {
 
     sourceSets {
         main {
-            jniLibs.srcDirs = ['src/main/jniLibs']
+            jniLibs.srcDirs = [externalJniLibs ? file(externalJniLibs) : file('src/main/jniLibs')]
             assets.srcDirs = [duskGeneratedAssetsDir]
         }
     }
@@ -77,7 +87,7 @@ android {
         abi {
             enable true
             reset()
-            include 'arm64-v8a', 'x86_64'
+            include(*releaseAbis)
             universalApk false
         }
     }

@@ -50,6 +50,7 @@
 #include <SDL3/SDL_video.h>
 #include "aurora/lib/window.hpp"
 #include "d/actor/d_a_horse.h"
+#include "dusk/dualscreen.h"
 #include "dusk/dusk.h"
 #include "dusk/endian.h"
 #include "dusk/frame_interpolation.h"
@@ -2778,6 +2779,9 @@ int mDoGph_Painter() {
     captureScreenSetPort();
     #endif
 
+#if TARGET_PC
+    dusk::dualscreen::beginHudCapture();
+#endif
     if (fapGmHIO_get2Ddraw()) {
         Mtx m4;
         cMtx_copy(j3dSys.getViewMtx(), m4);
@@ -2835,6 +2839,9 @@ int mDoGph_Painter() {
         dComIfGd_draw2DXlu();
     }
 
+#if TARGET_PC
+    dusk::dualscreen::endHudCapture();
+#endif
     #if DEBUG
     if (dJcame_c::get()) {
         dJcame_c::get()->show2D();
