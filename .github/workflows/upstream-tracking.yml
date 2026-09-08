@@ -1,0 +1,37 @@
+name: Track upstream releases
+
+on:
+  schedule:
+    - cron: '25 6 * * *'
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - docs/android/PROVENANCE.md
+      - scripts/android/check-upstreams.cjs
+      - scripts/android/check-upstreams.test.cjs
+      - .github/workflows/upstream-tracking.yml
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: upstream-release-tracking
+  cancel-in-progress: false
+
+jobs:
+  track:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Test tracking behavior
+        run: node --test scripts/android/check-upstreams.test.cjs
+      - name: Compare both upstreams and maintain tracking issue
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { check } = require('./scripts/android/check-upstreams.cjs');
+            await check({ github, context, core });

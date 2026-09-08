@@ -10,6 +10,8 @@
 
 # Android Dual-Screen Bleeding Edge
 
+[![Track upstream releases](https://github.com/Darkaxt/Dusklight-Android-Dual-Screen-Bleeding-Edge/actions/workflows/upstream-tracking.yml/badge.svg)](https://github.com/Darkaxt/Dusklight-Android-Dual-Screen-Bleeding-Edge/actions/workflows/upstream-tracking.yml)
+
 This repository is an **unofficial Android dual-screen port**. It is based on
 the official Dusklight `v1.4.1` release and adapts the dual-screen work from
 igawa6's `v1.4.1-ds-2.7` release. It is not produced, supported, or endorsed by
@@ -23,6 +25,27 @@ the real secondary-display dimensions instead of assuming a particular device.
 
 See [Android provenance](docs/android/PROVENANCE.md) for the exact commits,
 deliberate integration changes, version identity, and verification contract.
+
+## Upstream sources and updates
+
+| Source | Role |
+| --- | --- |
+| [TwilitRealm/dusklight](https://github.com/TwilitRealm/dusklight) | Authoritative official stable gameplay base |
+| [igawa6/dusklight](https://github.com/igawa6/dusklight) | Android dual-screen feature and UX reference |
+
+This standalone repository combines those two sources. The
+[upstream tracking workflow](https://github.com/Darkaxt/Dusklight-Android-Dual-Screen-Bleeding-Edge/actions/workflows/upstream-tracking.yml)
+checks their latest non-draft, non-prerelease releases daily at 06:25 UTC and
+whenever the integrated provenance changes. It compares exact tags and commits,
+maintains one [tracking issue](https://github.com/Darkaxt/Dusklight-Android-Dual-Screen-Bleeding-Edge/issues?q=is%3Aissue%20%22Upstream%20release%20integration%22),
+and closes it when both sources match. A green workflow badge means the check
+succeeded; its run summary and tracking issue show whether integration is pending.
+
+The local weekly Native Android updater integrates updates, tests and builds the
+Android port, preserves its signing identity, and publishes verified APKs here.
+The public tracking workflow does not automatically merge code or hold signing
+credentials. Source updates must also update `docs/android/PROVENANCE.md` after
+verification; it is the tracking workflow's record of what has been integrated.
 
 # Overview
 
