@@ -18,11 +18,11 @@ Authorization: `already_authorized`
 | R6 | Build and test the release for the exact source-derived ABI set and require 16 KiB alignment for arm64 native entries. | 4 | satisfied | Official/reference production workflows are exactly arm64; release native/Java/lint/Gradle builds passed and all APK/ELF alignment checks passed. |
 | R7 | Add a new persistent per-package signer only after signing-worker tests pass; Normalize through the unsigned-input gate and Verify without publishing to H:. | 5 | satisfied | Worker passed 32/32 before and after initialization; policy `dusklight` was normalized and verified without `Publish`. |
 | R8 | Verify package/version/ABIs/alignment/signature/signer/SHA-256 and absence of copyrighted or personal payloads, including nested assets. | 5 | satisfied | Candidate is `dev.twilitrealm.dusk`, `1.4.1.1`/`104001001`, arm64, signer `41f77566128bdee40fd94cbac5cdb14fb1c9d7f20cf0b671b511f5247363e863`, SHA-256 `1a314d7feee42e5def8160ed296e4970afd681a55815cf97e21a30f2409214d3`; both verifier paths passed. |
-| R9 | Publish only a completely verified main branch and one normal GitHub release with exactly one APK and one checksum sidecar; never overwrite a collision. | 6 | pending | Target repository does not yet exist; creation is deferred until all prepublication gates pass. |
-| R10 | Download published assets through the GitHub API, verify them again, and confirm ObtainX discovery. | 6 | pending | Authenticated round-trip pending. |
+| R9 | Publish only a completely verified main branch and one normal GitHub release with exactly one APK and one checksum sidecar; never overwrite a collision. | 6 | satisfied | Public repository `Darkaxt/Dusklight-Android-Dual-Screen-Bleeding-Edge` was created only after the prepublication gates; normal release `1.4.1.1` contains exactly the APK and matching `.sha256` sidecar. |
+| R10 | Download published assets through the GitHub API, verify them again, and confirm ObtainX discovery. | 6 | satisfied | Authenticated API download reproduced SHA-256 `1a314d7feee42e5def8160ed296e4970afd681a55815cf97e21a30f2409214d3`; both verifier paths passed, and the normal latest/releases APIs expose exactly one Android APK plus its sidecar. |
 | R11 | Do not use ADB or control a device; report the one-time reinstall/data-migration implication of the new signer. | 6 | satisfied | No ADB/device action was used; README and provenance record the one-time reinstall requirement. |
-| R12 | On verified success, extend the permanent weekly Native Android updater without removing any existing target or rule; on failure, leave it unchanged. | 7 | pending | Updater change is gated on public round-trip success. |
-| R13 | Remove attributable temporary/generated artifacts after verification while preserving source, credentials, user data, and known-good releases. | 7 | in_progress | Transactional cleanup inventory started before disk-intensive work. |
+| R12 | On verified success, extend the permanent weekly Native Android updater without removing any existing target or rule; on failure, leave it unchanged. | 7 | satisfied | After the successful round trip, `native-android-github-release-updater` was extended in place with Dusklight as the sixth authorized repository while retaining its existing targets, schedule, thread, release gates, and device prohibition. |
+| R13 | Remove attributable temporary/generated artifacts after verification while preserving source, credentials, user data, and known-good releases. | 7 | satisfied | The reviewed cleanup transaction removed the exact `D:\\Temp\\dusklight-release-20260908` staging tree and recorded 114,399 deleted entries totaling 2,935,790,035 bytes; source, credentials, shared caches, user data, and the public release were outside the deletion target. |
 
 ## Stages
 
@@ -32,7 +32,7 @@ Authorization: `already_authorized`
    evidenced integration defects, and commit it separately.
 3. Add durable provenance, user-facing documentation, release metadata, and
    repository verification tooling for R4-R5.
-4. Build both source-derived Android ABIs, run contract/unit/Gradle checks, and
+4. Build the exact source-derived arm64 Android release ABI, run contract/unit/Gradle checks, and
    verify R6 before accepting release output.
 5. Test the signing worker, establish the package-specific identity, normalize the
    unsigned APK, and run the complete R7-R8 policy verification.
