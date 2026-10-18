@@ -13,7 +13,14 @@ param(
     [string] $NdkVersion = '29.0.14206865',
 
     [Parameter()]
-    [string] $JavaHome = $(if ($env:JAVA_HOME) { $env:JAVA_HOME } else { 'C:\Program Files\Zulu\zulu-21' })
+    [string] $JavaHome = $(if ($env:JAVA_HOME) { $env:JAVA_HOME } else { 'C:\Program Files\Zulu\zulu-21' }),
+
+    [Parameter()]
+    [string] $GradleGateLauncher = $(if ($env:DUSK_GRADLE_GATE_LAUNCHER) {
+        $env:DUSK_GRADLE_GATE_LAUNCHER
+    } else { Join-Path $env:USERPROFILE '.agents\skills\gradle-build-gate\scripts\invoke_gradle_build_gate.py' }),
+
+    [string] $ThreadName
 )
 
 $ErrorActionPreference = 'Stop'
@@ -64,12 +71,19 @@ $env:PATH = (Split-Path -Parent $ninja) + [IO.Path]::PathSeparator + $env:PATH
 
 $resolvedOutput = [IO.Path]::GetFullPath($OutputRoot)
 New-Item -ItemType Directory -Path $resolvedOutput -Force | Out-Null
+$scratch = Join-Path $resolvedOutput 'scratch'
+New-Item -ItemType Directory -Path $scratch -Force | Out-Null
+$env:TEMP = $scratch
+$env:TMP = $scratch
+$env:CMAKE_BUILD_PARALLEL_LEVEL = '2'
+$env:CARGO_BUILD_JOBS = '2'
+$env:GRADLE_USER_HOME = Join-Path $resolvedOutput 'gradle-home'
 $jniRoot = Join-Path $resolvedOutput 'jni'
 $apkRoot = Join-Path $resolvedOutput 'apk'
 New-Item -ItemType Directory -Path $jniRoot, $apkRoot -Force | Out-Null
 
 $auroraSource = Join-Path $SourceRoot 'extern\aurora'
-$auroraPatch = Join-Path $SourceRoot 'patches\aurora-dualscreen-v2.0.2.patch'
+$auroraPatch = Join-Path $SourceRoot 'patches\aurora-dualscreen-v2.0.3.patch'
 $auroraOverlay = Join-Path $resolvedOutput 'aurora-source'
 $auroraArchive = Join-Path $resolvedOutput 'aurora-source.tar'
 foreach ($path in $auroraPatch, (Join-Path $auroraSource 'CMakeLists.txt')) {
@@ -77,20 +91,24 @@ foreach ($path in $auroraPatch, (Join-Path $auroraSource 'CMakeLists.txt')) {
         throw "Required Aurora source input not found: $path"
     }
 }
+$auroraCommit = (& git.exe -C $auroraSource rev-parse HEAD).Trim()
+if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve exact Aurora source commit' }
+$overlayIdentity = "$auroraCommit/$((Get-FileHash -LiteralPath $auroraPatch -Algorithm SHA256).Hash)"
+$overlayMarker = Join-Path $resolvedOutput 'aurora-overlay.identity'
 if (Test-Path -LiteralPath $auroraOverlay) {
-    $resolvedOverlay = [IO.Path]::GetFullPath($auroraOverlay)
-    if (-not $resolvedOverlay.StartsWith($resolvedOutput + [IO.Path]::DirectorySeparatorChar,
-            [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to replace Aurora overlay outside the build root: $resolvedOverlay"
+    if (-not (Test-Path -LiteralPath $overlayMarker) -or
+        (Get-Content -LiteralPath $overlayMarker -Raw).Trim() -ne $overlayIdentity) {
+        throw 'Existing Aurora overlay has another identity. Use a fresh task-owned output root; clean old outputs through transactional cleanup.'
     }
-    Remove-Item -LiteralPath $resolvedOverlay -Recurse -Force
-}
+} else {
 New-Item -ItemType Directory -Path $auroraOverlay -Force | Out-Null
 Invoke-Checked -Program 'git.exe' -Arguments @(
     '-C', $auroraSource, 'archive', '--format=tar', "--output=$auroraArchive", 'HEAD')
 Invoke-Checked -Program 'tar.exe' -Arguments @('-xf', $auroraArchive, '-C', $auroraOverlay)
 Invoke-Checked -Program 'git.exe' -Arguments @(
     '-C', $auroraOverlay, 'apply', '--no-index', $auroraPatch)
+Set-Content -LiteralPath $overlayMarker -Value $overlayIdentity
+}
 foreach ($path in 'include\dolphin\arq.h', 'include\aurora\aux_window.hpp') {
     if (-not (Test-Path -LiteralPath (Join-Path $auroraOverlay $path) -PathType Leaf)) {
         throw "Patched Aurora overlay is incomplete: $path"
@@ -123,7 +141,7 @@ foreach ($target in $targets) {
         "-DDUSK_AURORA_SOURCE_DIR=$auroraOverlay",
         "-DRust_CARGO_TARGET=$($target.Rust)"
     )
-    Invoke-Checked -Program $cmake -Arguments @('--build', $buildDir, '--target', 'dusklight', '--config', 'Release')
+    Invoke-Checked -Program $cmake -Arguments @('--build', $buildDir, '--target', 'dusklight', '--config', 'Release', '--parallel', '2')
     $library = Join-Path $buildDir 'libmain.so'
     if (-not (Test-Path -LiteralPath $library -PathType Leaf)) {
         throw "Native output was not produced: $library"
@@ -150,7 +168,18 @@ $env:DUSK_VERSION = $version.versionName
 $env:DUSK_VERSION_CODE = $version.versionCode
 $env:GIT_TAG = $version.releaseTag
 $androidProject = Join-Path $SourceRoot 'platforms\android'
-Invoke-Checked -Program $gradle -Arguments @('--no-daemon', '-p', $androidProject, ':app:assembleRelease')
+    if (-not (Test-Path -LiteralPath $GradleGateLauncher -PathType Leaf)) {
+        throw "Gradle build-gate launcher does not exist: $GradleGateLauncher"
+    }
+    $gateArguments = @(
+        $GradleGateLauncher,
+        'run',
+        '--project', $androidProject,
+        '--owner-task', 'Dusklight stable dual-screen release build'
+    )
+    if ($ThreadName) { $gateArguments += @('--thread-name', $ThreadName) }
+    $gateArguments += @('--', ':app:assembleRelease')
+    Invoke-Checked -Program 'python.exe' -Arguments $gateArguments
 
 $gradleApkRoot = Join-Path $env:DUSK_ANDROID_BUILD_ROOT 'app\outputs\apk\release'
 $unsignedApks = @(Get-ChildItem -LiteralPath $gradleApkRoot -Filter '*-unsigned.apk' -File)

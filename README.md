@@ -13,8 +13,8 @@
 [![Track upstream releases](https://github.com/Darkaxt/Dusklight-Android-Dual-Screen-Bleeding-Edge/actions/workflows/upstream-tracking.yml/badge.svg)](https://github.com/Darkaxt/Dusklight-Android-Dual-Screen-Bleeding-Edge/actions/workflows/upstream-tracking.yml)
 
 This repository is an **unofficial Android dual-screen port**. It is based on
-the official Dusklight `v2.0.2` release and adapts the dual-screen work from
-igawa6's `v2.0.0-ds-3.0.2` release. It is not produced, supported, or endorsed by
+the official Dusklight `v2.0.3` release and adapts the dual-screen work from
+igawa6's `v2.0.3-ds-3.0.3` release. It is not produced, supported, or endorsed by
 TwilitRealm or igawa6.
 
 The Android build can move the HUD, map, items, collection screens, guide, and

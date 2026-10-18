@@ -29,6 +29,17 @@ identity from `version.properties`.
 The output remains unsigned until it passes the shared signing worker's
 Normalize gate.
 
+Desktop Gradle execution requires the installed shared build-gate launcher (the
+default user-profile path, or `DUSK_GRADLE_GATE_LAUNCHER`). Native Ninja and Cargo
+are explicitly limited to two jobs. Pass the current chat title with `-ThreadName`
+when available. Reusing an output root is allowed only for the same Aurora overlay
+identity; use a new exact D:/Temp root after a source/patch change and retire old
+outputs through transactional cleanup after verification.
+
+The pure GuideConvert/ReleaseVersion host tests can be configured with
+`cmake -S tests -B D:\Temp\dusklight-tests`, built with `--parallel 2`, and run
+with `ctest --test-dir D:\Temp\dusklight-tests -C Release --output-on-failure`.
+
 ## Refresh SDL Java shim (optional)
 
 If you update SDL and want to refresh the embedded Java shim files:

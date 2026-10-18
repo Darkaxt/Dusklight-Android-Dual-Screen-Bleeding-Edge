@@ -125,6 +125,11 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
+if (CMAKE_GENERATOR MATCHES "Ninja")
+    set_property(GLOBAL APPEND PROPERTY JOB_POOLS dusk_compile=2 dusk_link=1)
+    set(CMAKE_JOB_POOL_COMPILE dusk_compile)
+    set(CMAKE_JOB_POOL_LINK dusk_link)
+endif ()
 set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
 set(CMAKE_COLOR_DIAGNOSTICS ON)
 
@@ -173,10 +178,6 @@ add_subdirectory("${DUSK_AURORA_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/extern/aurora"
 target_compile_definitions(aurora_mtx PRIVATE MTX_USE_PS=1)
 
 add_subdirectory(extern/borealis EXCLUDE_FROM_ALL)
-if (NOT CMAKE_CROSSCOMPILING)
-    enable_testing()
-    add_subdirectory(tests)
-endif ()
 
 add_subdirectory(libs/freeverb)
 

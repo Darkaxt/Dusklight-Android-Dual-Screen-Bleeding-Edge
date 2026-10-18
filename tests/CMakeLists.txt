@@ -7,6 +7,24 @@
 # gtest comes from aurora, which already fetches it for its own tests, so this
 # adds no new dependency.
 
+cmake_minimum_required(VERSION 3.25)
+if (CMAKE_SOURCE_DIR STREQUAL CMAKE_CURRENT_SOURCE_DIR)
+  project(dusklight_host_tests LANGUAGES CXX)
+  set(CMAKE_CXX_STANDARD 20)
+  set(CMAKE_CXX_STANDARD_REQUIRED ON)
+  if (MSVC)
+    add_compile_options(/MP1 /Zc:__cplusplus)
+    set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+  endif ()
+  enable_testing()
+  include(FetchContent)
+  # Same version and digest as the exact official Aurora pin's test project.
+  FetchContent_Declare(googletest
+    URL https://github.com/google/googletest/archive/refs/tags/v1.17.0.tar.gz
+    URL_HASH SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
+    DOWNLOAD_EXTRACT_TIMESTAMP FALSE)
+  FetchContent_MakeAvailable(googletest)
+endif ()
 include(GoogleTest)
 
 if (NOT TARGET gtest)
@@ -33,3 +51,11 @@ if (DEFINED GUIDE_TEST_PAGE AND EXISTS "${GUIDE_TEST_PAGE}")
 endif ()
 
 gtest_discover_tests(dusk_guide_tests)
+
+add_executable(dusk_release_version_tests
+  release_version_test.cpp
+  ../src/dusk/release_version.cpp
+)
+target_include_directories(dusk_release_version_tests PRIVATE ../src ../include)
+target_link_libraries(dusk_release_version_tests PRIVATE gtest gtest_main)
+gtest_discover_tests(dusk_release_version_tests)

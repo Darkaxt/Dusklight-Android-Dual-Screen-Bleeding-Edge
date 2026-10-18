@@ -12,6 +12,8 @@ $gradle = Get-Content -LiteralPath (Join-Path $repoRoot 'platforms\android\app\b
 $gradleSettings = Get-Content -LiteralPath (Join-Path $repoRoot 'platforms\android\settings.gradle') -Raw
 $appInfo = Get-Content -LiteralPath (Join-Path $repoRoot 'src\dusk\app_info.hpp') -Raw
 $cmake = Get-Content -LiteralPath (Join-Path $repoRoot 'CMakeLists.txt') -Raw
+$buildScript = Get-Content -LiteralPath (Join-Path $repoRoot 'scripts\android\Build-AndroidRelease.ps1') -Raw
+$hostTests = Get-Content -LiteralPath (Join-Path $repoRoot 'tests\CMakeLists.txt') -Raw
 $adaptedCpp = @(
     Get-Content -LiteralPath (Join-Path $repoRoot 'src\dusk\settings.cpp') -Raw
     Get-Content -LiteralPath (Join-Path $repoRoot 'src\dusk\ui\settings.cpp') -Raw
@@ -55,11 +57,11 @@ if (-not (Test-Path -LiteralPath $versionManifest -PathType Leaf)) {
     $failures.Add('Android release identity must be defined in version.properties.')
 } else {
     $version = Get-Content -LiteralPath $versionManifest -Raw
-    Require-Match $version '(?m)^versionName=2\.0\.2\.1$' `
-        'The maintained Android port must use numeric versionName 2.0.2.1.'
-    Require-Match $version '(?m)^versionCode=200002001$' `
-        'The maintained Android port must use monotonic versionCode 200002001.'
-    Require-Match $version '(?m)^releaseTag=2\.0\.2\.1$' `
+    Require-Match $version '(?m)^versionName=2\.0\.3\.1$' `
+        'The maintained Android port must use numeric versionName 2.0.3.1.'
+    Require-Match $version '(?m)^versionCode=200003001$' `
+        'The maintained Android port must use monotonic versionCode 200003001.'
+    Require-Match $version '(?m)^releaseTag=2\.0\.3\.1$' `
         'The Git tag must equal the numeric APK versionName.'
 }
 Require-Match $gradle 'version\.properties' `
@@ -80,6 +82,24 @@ Require-Match $cmake '100000000' `
     'CMake versionCode must use the monotonic four-component encoding.'
 Require-Match $cmake 'FetchContent_Declare\s*\(\s*miniz' `
     'The dual-screen archive helper must declare its miniz dependency.'
+Require-Match $buildScript 'DUSK_GRADLE_GATE_LAUNCHER' `
+    'The Android build must accept the shared Gradle build-gate launcher.'
+Require-Match $buildScript "(?s)'run'.*'--project'.*':app:assembleRelease'" `
+    'The Android release task must run through the shared Gradle gate when configured.'
+Require-Match $buildScript "'--parallel', '2'" `
+    'The native CMake build must explicitly constrain Ninja to two jobs.'
+Require-Match $buildScript 'CARGO_BUILD_JOBS\s*=\s*\x272\x27' `
+    'Nested Rust compilation must use two jobs.'
+Require-Match $buildScript "'--owner-task'.*|'--owner-task'," `
+    'Desktop builds must identify their operation to the shared Gradle gate.'
+Reject-Match $buildScript 'Invoke-Checked -Program \$gradle -Arguments' `
+    'The desktop release entry point must not bypass the required Gradle gate.'
+Require-Match $cmake 'CMAKE_JOB_POOL_COMPILE\s+dusk_compile' `
+    'Native compiler targets must inherit the depth-two Ninja pool.'
+Require-Match $hostTests 'dusk_guide_tests' `
+    'The host test project must build the GuideConvert tests.'
+Require-Match $hostTests 'dusk_release_version_tests' `
+    'The host test project must build the ReleaseVersion tests.'
 Require-Match $adaptedCpp '(?-i:config::save\s*\()' `
     'Adapted dual-screen settings must use the v2 stable-base config::save API.'
 

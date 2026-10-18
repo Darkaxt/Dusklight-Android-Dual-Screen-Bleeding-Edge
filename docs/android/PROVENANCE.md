@@ -2,18 +2,27 @@
 
 ## Source identities
 
-- Official stable base: [TwilitRealm/dusklight `v2.0.2`](https://github.com/TwilitRealm/dusklight/releases/tag/v2.0.2), commit `b245c6bef8b4a370afb2453104a585dd41c97676`.
-- Dual-screen feature reference: [igawa6/dusklight `v2.0.0-ds-3.0.2`](https://github.com/igawa6/dusklight/releases/tag/v2.0.0-ds-3.0.2), commit `afacbb6a82d466b8a501ec5d1077b48a8c37034c`.
-- Android platform layer: commit `96073bb431`, applied directly above the official stable base.
+- Official stable base: [TwilitRealm/dusklight `v2.0.3`](https://github.com/TwilitRealm/dusklight/releases/tag/v2.0.3), commit `40457c6adb381928e4b5fef6ed459ed291edd5e2`.
+- Dual-screen feature reference: [igawa6/dusklight `v2.0.3-ds-3.0.3`](https://github.com/igawa6/dusklight/releases/tag/v2.0.3-ds-3.0.3), commit `edaf1f405ee8477d2074c36a3fbf0a32aade75c0`.
+- Android platform layer: commit `4f9898dfd2`, applied directly above the official stable base.
+- Dual-screen adaptation layer: commit `45b182473e`, applied above the Android platform layer.
+- Aurora base: official commit `3227d76c60e1e782ca576610bce61c9e7744d8be`, with the reviewed dual-screen delta carried by `patches/aurora-dualscreen-v2.0.3.patch` during Android builds.
 
 Those were the newest non-draft, non-prerelease releases in their respective
 repositories when revalidated through the authenticated GitHub API on
-2026-09-27. The layers remain separate in history so the Android shell and the
+2026-10-18. The layers remain separate in history so the Android shell and the
 adapted gameplay feature set can be reviewed independently.
+
+The reference's five follow-up commits (`ef4bed123e`, `d68953ee25`,
+`39b266c223`, `fb00a7f9c4`, `edaf1f405e`) are carried without changes to their
+gameplay/companion code: underwater polling is silent, unavailable transformation
+buttons cannot retain hit areas, dungeon floor faces are null-safe, phone sends
+are queued without holding the client lock across network writes, disconnects
+clear held input, and only upstream's shader compilation setting remains.
 
 ## Adaptation boundary
 
-The dual-screen implementation is adapted to the stable `v2.0.2` APIs rather
+The dual-screen implementation is adapted to the stable `v2.0.3` APIs rather
 than replacing the base with the reference fork. It covers companion HUD, map,
 items, collection, guide, touch interaction, Wii U/3DS layout choices, display
 swap and dim controls, animation controls, controller bindings, Ooccoo/form
@@ -34,7 +43,7 @@ paths and saves. This avoids silently moving user data.
 
 ## Release identity and payload
 
-The current port release is `2.0.2.1`, with Android `versionCode` `200002001`.
+The current port release is `2.0.3.1`, with Android `versionCode` `200003001`.
 Numeric four-component tags are intentional: the first three fields identify
 the official stable base and the fourth is this port's monotonic revision.
 Descriptive wording belongs in the release title, not the update-comparison

@@ -1,0 +1,1192 @@
+diff --git a/cmake/aurora_core.cmake b/cmake/aurora_core.cmake
+index dfeed19..da24bf1 100644
+--- a/cmake/aurora_core.cmake
++++ b/cmake/aurora_core.cmake
+@@ -20,6 +20,10 @@ set_target_properties(aurora_core PROPERTIES FOLDER "aurora")
+ target_compile_definitions(aurora_core PUBLIC AURORA TARGET_PC)
+ target_include_directories(aurora_core PUBLIC include)
+ target_link_libraries(aurora_core PUBLIC fmt::fmt ${AURORA_SDL3_TARGET} xxHash::xxhash)
++if (ANDROID)
++    # ANativeWindow_release for the aux native-window path
++    target_link_libraries(aurora_core PRIVATE android)
++endif ()
+ target_link_libraries(aurora_core PRIVATE absl::btree absl::flat_hash_map sqlite3 Tracy::TracyClient)
+ if (AURORA_ENABLE_GX AND AURORA_CACHE_USE_ZSTD)
+     target_compile_definitions(aurora_core PRIVATE AURORA_CACHE_USE_ZSTD)
+@@ -72,6 +76,7 @@ endif ()
+ if (AURORA_ENABLE_GX)
+     target_compile_definitions(aurora_core PUBLIC AURORA_ENABLE_GX WEBGPU_DAWN)
+     target_sources(aurora_core PRIVATE
++            lib/aux_window.cpp
+             lib/webgpu/gpu.cpp
+             lib/webgpu/gpu_cache.cpp
+             lib/webgpu/gpu_prof.cpp
+diff --git a/include/aurora/aux_window.hpp b/include/aurora/aux_window.hpp
+new file mode 100644
+index 0000000..e65a703
+--- /dev/null
++++ b/include/aurora/aux_window.hpp
+@@ -0,0 +1,77 @@
++#pragma once
++
++#include <cstdint>
++#include <vector>
++
++#include <webgpu/webgpu_cpp.h>
++
++namespace aurora::auxwin {
++
++struct CreateInfo {
++  const char* title = "Aurora Aux Window";
++  uint32_t width = 608;
++  uint32_t height = 448;
++  int32_t posX = -1;         // -1 = window-manager placement
++  int32_t posY = -1;
++  int32_t displayIndex = -1; // >= 0: center on that display (overrides posX/posY)
++  // Never mapped to the screen. The surface/swapchain still exists and
++  // present()/request_capture()/take_capture() all still work normally — this
++  // is for consumers that only want the rendered pixels (e.g. pushed over the
++  // network) and have no on-screen use for the window itself.
++  bool hidden = false;
++  // When true, width/height are the EXACT backing pixel-buffer size to
++  // create, with no further DPI scaling applied — for callers that already
++  // resolved a real device's pixel resolution themselves (e.g. a phone's
++  // reported width*devicePixelRatio) and would otherwise get it silently
++  // multiplied again by the desktop's own display content scale (SDL3's
++  // SDL_WINDOW_HIGH_PIXEL_DENSITY treats width/height as DPI-independent
++  // points, not pixels). Leave false for a real on-screen window, where
++  // normal DPI-aware sizing is what's wanted.
++  bool exactPixelSize = false;
++};
++
++/// Create the auxiliary display-only window. Requires the graphics device to be
++/// initialized (i.e. after aurora_initialize). Main/game thread only.
++bool create(const CreateInfo& info);
++
++/// Tear down the auxiliary window and its surface. Main/game thread only.
++void destroy();
++
++bool is_open() noexcept;
++
++/// Set the texture displayed on the auxiliary window for the current frame.
++/// The view must remain valid through the frame's submission (per-frame pooled
++/// snapshots from gfx::resolve_pass qualify). Call between begin/end frame.
++void set_source(wgpu::TextureView view, uint32_t width, uint32_t height);
++
++/// Darken the auxiliary window at PRESENT time: 0 = untouched, 1 = black.
++/// Applied to the blit, not to the source picture, so the fade keeps running
++/// on frames where set_source is not called (e.g. the companion freezes on its
++/// last frame during a stage load). Callable from any thread.
++void set_dim(float amount);
++
++/// Ask for the next presented aux frame to be copied back to CPU memory.
++/// One-shot: a normal frame costs nothing. Callable from any thread.
++void request_capture();
++
++/// Move the most recent completed capture into `out` (tightly packed RGBA8,
++/// top row first) and clear it. False while none is ready. Callable from any
++/// thread.
++bool take_capture(std::vector<uint8_t>& out, uint32_t* width, uint32_t* height);
++
++/// True once after the user requested closing the auxiliary window.
++bool consume_close_request();
++
++/// Attach an externally-managed native window (e.g. an Android Presentation
++/// surface as an ANativeWindow*) as the auxiliary output instead of an SDL
++/// window. Pass nullptr to detach. Ownership of the window reference transfers
++/// to aurora (released with ANativeWindow_release on Android). Callable from
++/// any thread; the surface is (re)created on the render worker at the next
++/// frame. No-op on platforms without native-window support.
++void set_native_window(void* nativeWindow, uint32_t width, uint32_t height);
++
++/// Current auxiliary surface size in pixels. Returns false when no surface is
++/// active. Thread-safe.
++bool get_surface_size(uint32_t* width, uint32_t* height);
++
++} // namespace aurora::auxwin
+diff --git a/lib/aurora.cpp b/lib/aurora.cpp
+index 9430842..bf68e1c 100644
+--- a/lib/aurora.cpp
++++ b/lib/aurora.cpp
+@@ -2,6 +2,7 @@
+ #include <aurora/time.hpp>
+ 
+ #ifdef AURORA_ENABLE_GX
++#include "aux_window.hpp"
+ #include "gfx/resources.hpp"
+ #include "gfx/frame.hpp"
+ #include "gfx/recording.hpp"
+@@ -366,6 +367,8 @@ void end_frame() noexcept {
+     } else {
+       Log.info("Skipping present; window not presentable");
+     }
++    // The main frame's submit must never depend on the aux window.
++    // See docs/dualscreen-fork.md (Verification) for why.
+     webgpu::gpu_prof::frame_end(encoder);
+     const wgpu::CommandBufferDescriptor cmdBufDescriptor{.label = "Redraw command buffer"};
+     const auto buffer = encoder.Finish(&cmdBufDescriptor);
+@@ -374,6 +377,7 @@ void end_frame() noexcept {
+       g_queue.Submit(1, &buffer);
+     }
+     webgpu::gpu_prof::after_submit();
++    auxwin::present();
+     if (canPresent && g_surface) {
+       ZoneScopedN("Present");
+       wgpu::ConvertibleStatus status = wgpu::Status::Error;
+diff --git a/lib/aux_window.cpp b/lib/aux_window.cpp
+new file mode 100644
+index 0000000..4979c61
+--- /dev/null
++++ b/lib/aux_window.cpp
+@@ -0,0 +1,761 @@
++#include <aurora/aux_window.hpp>
++
++#ifdef AURORA_ENABLE_GX
++
++#include "aux_window.hpp"
++#include "dawn/BackendBinding.hpp"
++#include "internal.hpp"
++#include "webgpu/gpu.hpp"
++#include "window.hpp"
++
++#include <aurora/gfx.hpp>
++
++#include <SDL3/SDL_events.h>
++#include <SDL3/SDL_properties.h>
++#include <SDL3/SDL_video.h>
++
++#ifdef __ANDROID__
++#include <android/native_window.h>
++#endif
++
++#include <algorithm>
++#include <atomic>
++#include <cstring>
++#include <mutex>
++#include <vector>
++
++namespace aurora::auxwin {
++namespace {
++Module Log("aurora::auxwin");
++
++struct Source {
++  wgpu::TextureView view;
++  uint32_t width = 0;
++  uint32_t height = 0;
++};
++
++// Lock order: g_surfaceMutex before g_mutex.
++// g_surfaceMutex serializes GPU use of the surface (encode/present, which can
++// block inside GetCurrentTexture/Present) against surface teardown. g_mutex
++// guards shared state and is only ever held briefly, so the game and UI
++// threads (set_source, get_surface_size, staging) never stall behind a
++// blocking present — holding one mutex across present caused whole-game
++// freezes on Android when the bottom display hiccuped.
++std::mutex g_surfaceMutex;
++std::mutex g_mutex;
++bool g_active = false;
++SDL_Window* g_window = nullptr;
++SDL_WindowID g_windowId = 0;
++wgpu::Surface g_surface;
++wgpu::SurfaceConfiguration g_surfaceConfig;
++wgpu::Sampler g_sampler;
++Source g_source;
++
++std::atomic<bool> g_needsConfigure{false};
++std::atomic<uint32_t> g_pendingWidth{0};
++std::atomic<uint32_t> g_pendingHeight{0};
++std::atomic<bool> g_closeRequested{false};
++
++// Present-time dim, 0..1. Deliberately NOT part of Source: the caller stops
++// refreshing the source texture while the companion's HUD is torn down during
++// a stage load, and the fade has to keep running across those frames.
++std::atomic<float> g_dim{0.0f};
++
++// One-shot CPU read-back of the presented aux frame, for the on-device
++// screenshot path. Idle until request_capture(); the blit is then repeated
++// into g_captureTexture (the surface texture is RenderAttachment-only and
++// cannot be a copy source) and copied to a staging buffer.
++enum class CaptureState { Idle, Armed, InFlight, Ready };
++std::mutex g_captureMutex;
++CaptureState g_captureState = CaptureState::Idle;
++wgpu::Texture g_captureTexture;
++wgpu::TextureView g_captureView;
++wgpu::Buffer g_captureStaging;
++uint32_t g_captureWidth = 0;
++uint32_t g_captureHeight = 0;
++uint32_t g_capturePaddedBpr = 0;
++wgpu::TextureFormat g_captureFormat = wgpu::TextureFormat::Undefined;
++bool g_captureSwizzleBgr = false;
++std::vector<uint8_t> g_captureData;
++// Bumped whenever a capture is abandoned (teardown, detach). The map callback
++// carries the generation it was issued under and drops itself if they differ,
++// so an in-flight read-back can never resurrect state that has been released
++// and can never wedge the request path.
++uint64_t g_captureGeneration = 0;
++
++// Externally-managed native window (Android Presentation surface). Attach and
++// detach requests are staged here and consumed on the render worker.
++void* g_pendingNativeWindow = nullptr;
++bool g_nativeWindowDirty = false;
++bool g_pendingDetach = false;
++void* g_currentNativeWindow = nullptr;
++
++void release_native_window(void* window) {
++#ifdef __ANDROID__
++  if (window != nullptr) {
++    ANativeWindow_release(static_cast<ANativeWindow*>(window));
++  }
++#else
++  (void)window;
++#endif
++}
++
++// Render worker: (re)allocate the capture target and staging buffer for the
++// current surface size. Caller holds g_captureMutex.
++//
++// NOTE: the null tests below do NOT detect an allocation failure — Dawn returns
++// a valid *error object*, not a null handle, so a genuine OOM surfaces later as
++// an uncaptured device error. They only guard a device that is already gone.
++// This is a debug-only capture path, so that is accepted rather than wrapped in
++// an error scope.
++bool ensure_capture_locked(uint32_t width, uint32_t height, wgpu::TextureFormat format) {
++  constexpr uint32_t kCopyAlign = 256;  // WebGPU bytesPerRow alignment
++  const uint32_t paddedBpr = (width * 4 + kCopyAlign - 1) / kCopyAlign * kCopyAlign;
++  if (g_captureTexture && g_captureWidth == width && g_captureHeight == height &&
++      g_captureFormat == format) {
++    return true;
++  }
++  // Partial reuse is not worth the bookkeeping; start from nothing so a failed
++  // allocation cannot leave half-valid dimensions behind.
++  g_captureTexture = {};
++  g_captureView = {};
++  g_captureStaging = {};
++  g_captureWidth = 0;
++  g_captureHeight = 0;
++  g_capturePaddedBpr = 0;
++  const wgpu::TextureDescriptor textureDescriptor{
++      .label = "Aux Capture Texture",
++      .usage = wgpu::TextureUsage::RenderAttachment | wgpu::TextureUsage::CopySrc,
++      .dimension = wgpu::TextureDimension::e2D,
++      .size = wgpu::Extent3D{width, height, 1},
++      .format = format,
++      .mipLevelCount = 1,
++      .sampleCount = 1,
++  };
++  g_captureTexture = webgpu::g_device.CreateTexture(&textureDescriptor);
++  if (!g_captureTexture) {
++    return false;
++  }
++  g_captureView = g_captureTexture.CreateView();
++  const wgpu::BufferDescriptor bufferDescriptor{
++      .label = "Aux Capture Staging Buffer",
++      .usage = wgpu::BufferUsage::MapRead | wgpu::BufferUsage::CopyDst,
++      .size = static_cast<uint64_t>(paddedBpr) * height,
++  };
++  g_captureStaging = webgpu::g_device.CreateBuffer(&bufferDescriptor);
++  if (!g_captureStaging) {
++    g_captureTexture = {};
++    g_captureView = {};
++    return false;
++  }
++  g_captureFormat = format;
++  g_captureWidth = width;
++  g_captureHeight = height;
++  g_capturePaddedBpr = paddedBpr;
++  // Surfaces are commonly BGRA8; the public capture is always RGBA8.
++  g_captureSwizzleBgr = format == wgpu::TextureFormat::BGRA8Unorm ||
++                        format == wgpu::TextureFormat::BGRA8UnormSrgb;
++  return true;
++}
++
++// Abandon any capture and drop its resources. Caller holds g_captureMutex.
++//
++// Bumping the generation is what makes this safe: the pending map callback owns
++// its own reference to the staging buffer, so clearing the global here cannot
++// destroy the buffer and therefore cannot make Dawn fire an aborted callback
++// INLINE on this thread — which, on a non-recursive mutex we already hold,
++// deadlocked the game thread.
++void release_capture_locked() {
++  g_captureGeneration++;
++  g_captureState = CaptureState::Idle;
++  g_captureTexture = {};
++  g_captureView = {};
++  g_captureStaging = {};
++  g_captureWidth = 0;
++  g_captureHeight = 0;
++  g_capturePaddedBpr = 0;
++  g_captureData.clear();
++  g_captureData.shrink_to_fit();
++}
++
++void configure_surface_locked(uint32_t width, uint32_t height) {
++  if (!g_surface || width == 0 || height == 0) {
++    return;
++  }
++  g_surfaceConfig.width = width;
++  g_surfaceConfig.height = height;
++  g_surface.Configure(&g_surfaceConfig);
++}
++
++} // namespace
++
++bool create(const CreateInfo& info) {
++  if (!webgpu::g_device || !webgpu::g_instance) {
++    Log.error("create: graphics device not initialized");
++    return false;
++  }
++  std::scoped_lock locks{g_surfaceMutex, g_mutex};
++  if (g_window != nullptr) {
++    return true;
++  }
++
++  SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE;
++  if (!info.exactPixelSize) {
++    flags |= SDL_WINDOW_HIGH_PIXEL_DENSITY;
++  }
++  if (info.hidden) {
++    flags |= SDL_WINDOW_HIDDEN;
++  }
++  Sint32 posX = info.posX < 0 ? SDL_WINDOWPOS_UNDEFINED : info.posX;
++  Sint32 posY = info.posY < 0 ? SDL_WINDOWPOS_UNDEFINED : info.posY;
++  if (info.displayIndex >= 0) {
++    int displayCount = 0;
++    SDL_DisplayID* displays = SDL_GetDisplays(&displayCount);
++    if (displays != nullptr) {
++      if (info.displayIndex < displayCount) {
++        posX = SDL_WINDOWPOS_CENTERED_DISPLAY(displays[info.displayIndex]);
++        posY = SDL_WINDOWPOS_CENTERED_DISPLAY(displays[info.displayIndex]);
++      }
++      SDL_free(displays);
++    }
++  }
++
++  const auto props = SDL_CreateProperties();
++  SDL_SetStringProperty(props, SDL_PROP_WINDOW_CREATE_TITLE_STRING, info.title);
++  SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_X_NUMBER, posX);
++  SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_Y_NUMBER, posY);
++  SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_WIDTH_NUMBER, static_cast<Sint32>(info.width));
++  SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_HEIGHT_NUMBER, static_cast<Sint32>(info.height));
++  SDL_SetNumberProperty(props, SDL_PROP_WINDOW_CREATE_FLAGS_NUMBER, flags);
++  SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_EXTERNAL_GRAPHICS_CONTEXT_BOOLEAN, true);
++  g_window = SDL_CreateWindowWithProperties(props);
++  SDL_DestroyProperties(props);
++  if (g_window == nullptr) {
++    Log.error("Failed to create aux window: {}", SDL_GetError());
++    return false;
++  }
++  g_windowId = SDL_GetWindowID(g_window);
++
++  const auto chainedDescriptor = webgpu::utils::SetupWindowAndGetSurfaceDescriptor(g_window);
++  if (!chainedDescriptor) {
++    Log.error("Failed to create aux surface descriptor");
++    SDL_DestroyWindow(g_window);
++    g_window = nullptr;
++    return false;
++  }
++  const wgpu::SurfaceDescriptor surfaceDescriptor{
++      .nextInChain = chainedDescriptor.get(),
++      .label = "Aux Surface",
++  };
++  g_surface = webgpu::g_instance.CreateSurface(&surfaceDescriptor);
++  if (!g_surface) {
++    Log.error("Failed to create aux surface");
++    SDL_DestroyWindow(g_window);
++    g_window = nullptr;
++    return false;
++  }
++
++  // Reuse the format negotiated for the main surface so g_CopyPipeline is
++  // compatible; Fifo is universally supported.
++  g_surfaceConfig = wgpu::SurfaceConfiguration{
++      .device = webgpu::g_device,
++      .format = webgpu::g_graphicsConfig.surfaceConfiguration.format,
++      .usage = wgpu::TextureUsage::RenderAttachment,
++      .presentMode = wgpu::PresentMode::Fifo,
++  };
++  int pixelWidth = 0;
++  int pixelHeight = 0;
++  SDL_GetWindowSizeInPixels(g_window, &pixelWidth, &pixelHeight);
++  configure_surface_locked(static_cast<uint32_t>(pixelWidth), static_cast<uint32_t>(pixelHeight));
++
++  const wgpu::SamplerDescriptor samplerDescriptor{
++      .label = "Aux Blit Sampler",
++      .addressModeU = wgpu::AddressMode::ClampToEdge,
++      .addressModeV = wgpu::AddressMode::ClampToEdge,
++      .addressModeW = wgpu::AddressMode::ClampToEdge,
++      .magFilter = wgpu::FilterMode::Linear,
++      .minFilter = wgpu::FilterMode::Linear,
++  };
++  g_sampler = webgpu::g_device.CreateSampler(&samplerDescriptor);
++
++  g_closeRequested = false;
++  g_needsConfigure = false;
++  g_active = true;
++  Log.info("Aux window created ({}x{} px)", pixelWidth, pixelHeight);
++  return true;
++}
++
++void destroy() {
++  {
++    std::lock_guard lock{g_mutex};
++    if (g_window == nullptr) {
++      return;
++    }
++    g_active = false;
++    g_source = {};
++  }
++  // Drain the render worker so encode()/present() can no longer touch the
++  // surface before it is torn down.
++  gfx::synchronize();
++  std::scoped_lock locks{g_surfaceMutex, g_mutex};
++  if (g_surface) {
++    g_surface.Unconfigure();
++    g_surface = {};
++  }
++  g_sampler = {};
++  if (g_window != nullptr) {
++    SDL_DestroyWindow(g_window);
++    g_window = nullptr;
++    g_windowId = 0;
++  }
++  {
++    // gfx::synchronize() above drains the render worker, but does NOT wait on
++    // the GPU — a map may still be pending here, which is exactly what
++    // release_capture_locked is built to survive.
++    std::lock_guard captureLock{g_captureMutex};
++    release_capture_locked();
++  }
++  Log.info("Aux window destroyed");
++}
++
++bool is_open() noexcept {
++  std::lock_guard lock{g_mutex};
++  return g_active;
++}
++
++void set_source(wgpu::TextureView view, uint32_t width, uint32_t height) {
++  std::lock_guard lock{g_mutex};
++  g_source = Source{std::move(view), width, height};
++}
++
++void set_dim(float amount) {
++  g_dim.store(amount < 0.0f ? 0.0f : (amount > 1.0f ? 1.0f : amount));
++}
++
++void request_capture() {
++  std::lock_guard lock{g_captureMutex};
++  // Always re-armable. A copy already in flight is abandoned rather than
++  // waited on (the generation bump makes its completion a no-op), so a capture
++  // that never completes — surface torn down mid-map, display detached — can
++  // no longer wedge this path permanently.
++  if (g_captureState == CaptureState::InFlight) {
++    g_captureGeneration++;
++  }
++  g_captureData.clear();
++  g_captureState = CaptureState::Armed;
++}
++
++bool take_capture(std::vector<uint8_t>& out, uint32_t* width, uint32_t* height) {
++  std::lock_guard lock{g_captureMutex};
++  if (g_captureState != CaptureState::Ready) {
++    return false;
++  }
++  out = std::move(g_captureData);
++  g_captureData.clear();
++  if (width != nullptr) {
++    *width = g_captureWidth;
++  }
++  if (height != nullptr) {
++    *height = g_captureHeight;
++  }
++  g_captureState = CaptureState::Idle;
++  return true;
++}
++
++bool consume_close_request() { return g_closeRequested.exchange(false); }
++
++bool get_surface_size(uint32_t* width, uint32_t* height) {
++  std::lock_guard lock{g_mutex};
++  if (!g_active || !g_surface) {
++    return false;
++  }
++  *width = g_surfaceConfig.width;
++  *height = g_surfaceConfig.height;
++  return true;
++}
++
++void set_native_window(void* nativeWindow, uint32_t width, uint32_t height) {
++  if (nativeWindow == nullptr) {
++    // Stage the detach — do NOT block on g_surfaceMutex. Synchronous
++    // detach would stall the Android UI thread while the render worker
++    // holds the surface mutex inside GetCurrentTexture/Present, and
++    // accumulated stalls trigger ANR kills on Android.
++    std::lock_guard lock{g_mutex};
++    if (g_nativeWindowDirty && g_pendingNativeWindow != nullptr) {
++      release_native_window(g_pendingNativeWindow);
++      g_pendingNativeWindow = nullptr;
++    }
++    g_nativeWindowDirty = false;
++    g_pendingDetach = true;
++    return;
++  }
++  std::lock_guard lock{g_mutex};
++  // Drop a staged-but-unconsumed window that is being replaced.
++  if (g_nativeWindowDirty && g_pendingNativeWindow != nullptr && g_pendingNativeWindow != nativeWindow) {
++    release_native_window(g_pendingNativeWindow);
++  }
++  g_pendingNativeWindow = nativeWindow;
++  g_pendingWidth = width;
++  g_pendingHeight = height;
++  g_nativeWindowDirty = true;
++}
++
++namespace {
++
++// Render worker: apply a staged native-window attach/detach. Caller holds
++// BOTH g_surfaceMutex and g_mutex.
++void consume_native_window_locked() {
++  // Detach takes priority — runs inside the surface lock so the render
++  // worker cannot interleave with GPU use of the surface.
++  if (g_pendingDetach) {
++    g_pendingDetach = false;
++    if (g_currentNativeWindow != nullptr) {
++      g_source = {};
++      {
++        // Android never calls destroy(), so this is the ONLY cleanup path
++        // there: without it a single screenshot left ~16 MB of texture plus
++        // host-visible staging buffer resident for the rest of the process,
++        // across every subsequent detach/reattach.
++        std::lock_guard captureLock{g_captureMutex};
++        release_capture_locked();
++      }
++      if (g_surface && g_window == nullptr) {
++        g_surface.Unconfigure();
++        g_surface = {};
++      }
++      release_native_window(g_currentNativeWindow);
++      g_currentNativeWindow = nullptr;
++      g_active = g_window != nullptr;
++    }
++  }
++
++  if (!g_nativeWindowDirty) {
++    return;
++  }
++  g_nativeWindowDirty = false;
++
++  if (g_surface && g_window == nullptr) {
++    g_surface.Unconfigure();
++    g_surface = {};
++  }
++  if (g_currentNativeWindow != nullptr && g_currentNativeWindow != g_pendingNativeWindow) {
++    release_native_window(g_currentNativeWindow);
++  }
++  g_currentNativeWindow = g_pendingNativeWindow;
++  g_pendingNativeWindow = nullptr;
++  if (g_currentNativeWindow == nullptr) {
++    g_active = g_window != nullptr;
++    return;
++  }
++
++#ifdef __ANDROID__
++  wgpu::SurfaceSourceAndroidNativeWindow source;
++  source.window = g_currentNativeWindow;
++  const wgpu::SurfaceDescriptor surfaceDescriptor{
++      .nextInChain = &source,
++      .label = "Aux Surface (native window)",
++  };
++  g_surface = webgpu::g_instance.CreateSurface(&surfaceDescriptor);
++  if (!g_surface) {
++    Log.error("Failed to create aux surface from native window");
++    release_native_window(g_currentNativeWindow);
++    g_currentNativeWindow = nullptr;
++    g_active = false;
++    return;
++  }
++  g_surfaceConfig = wgpu::SurfaceConfiguration{
++      .device = webgpu::g_device,
++      .format = webgpu::g_graphicsConfig.surfaceConfiguration.format,
++      .usage = wgpu::TextureUsage::RenderAttachment,
++      .presentMode = wgpu::PresentMode::Fifo,
++  };
++  configure_surface_locked(g_pendingWidth.load(), g_pendingHeight.load());
++  if (!g_sampler) {
++    const wgpu::SamplerDescriptor samplerDescriptor{
++        .label = "Aux Blit Sampler",
++        .addressModeU = wgpu::AddressMode::ClampToEdge,
++        .addressModeV = wgpu::AddressMode::ClampToEdge,
++        .addressModeW = wgpu::AddressMode::ClampToEdge,
++        .magFilter = wgpu::FilterMode::Linear,
++        .minFilter = wgpu::FilterMode::Linear,
++    };
++    g_sampler = webgpu::g_device.CreateSampler(&samplerDescriptor);
++  }
++  g_active = true;
++  Log.info("Aux native window attached ({}x{})", g_pendingWidth.load(), g_pendingHeight.load());
++#else
++  Log.warn("set_native_window: unsupported on this platform");
++  release_native_window(g_currentNativeWindow);
++  g_currentNativeWindow = nullptr;
++#endif
++}
++
++} // namespace
++
++bool filter_event(const SDL_Event& event) {
++  if (event.type < SDL_EVENT_WINDOW_FIRST || event.type > SDL_EVENT_WINDOW_LAST) {
++    return false;
++  }
++  {
++    std::lock_guard lock{g_mutex};
++    if (g_windowId == 0 || event.window.windowID != g_windowId) {
++      return false;
++    }
++  }
++  switch (event.type) {
++  case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
++    g_pendingWidth = static_cast<uint32_t>(event.window.data1);
++    g_pendingHeight = static_cast<uint32_t>(event.window.data2);
++    g_needsConfigure = true;
++    break;
++  case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
++    g_closeRequested = true;
++    break;
++  default:
++    break;
++  }
++  return true;
++}
++
++void present() {
++  // Single critical section for ALL GPU use of the aux surface — acquire,
++  // blit (own encoder + submit), and present. Previously the blit was
++  // recorded into the frame encoder in one lock scope and submitted outside
++  // it, so a synchronous native-window detach (Android screen-off) could
++  // destroy the surface between the two and crash the submit.
++  std::lock_guard surfaceLock{g_surfaceMutex};
++  wgpu::Surface surface;
++  wgpu::Sampler sampler;
++  Source source;
++  uint32_t surfaceWidth = 0;
++  uint32_t surfaceHeight = 0;
++  wgpu::TextureFormat surfaceFormat = wgpu::TextureFormat::Undefined;
++  {
++    std::lock_guard lock{g_mutex};
++    consume_native_window_locked();
++    if (!g_active || !g_surface) {
++      return;
++    }
++    if (g_needsConfigure.exchange(false)) {
++      configure_surface_locked(g_pendingWidth.load(), g_pendingHeight.load());
++    }
++    surface = g_surface;
++    sampler = g_sampler;
++    source = g_source;
++    surfaceWidth = g_surfaceConfig.width;
++    surfaceHeight = g_surfaceConfig.height;
++    surfaceFormat = g_surfaceConfig.format;
++  }
++
++  wgpu::SurfaceTexture surfaceTexture;
++  surface.GetCurrentTexture(&surfaceTexture);
++  switch (surfaceTexture.status) {
++  case wgpu::SurfaceGetCurrentTextureStatus::SuccessOptimal:
++    break;
++  case wgpu::SurfaceGetCurrentTextureStatus::SuccessSuboptimal:
++  case wgpu::SurfaceGetCurrentTextureStatus::Outdated:
++    g_needsConfigure = true;
++    return;
++  default:
++    Log.warn("Aux surface texture unavailable: {}", static_cast<int>(surfaceTexture.status));
++    return;
++  }
++  const auto view = surfaceTexture.texture.CreateView();
++
++  const wgpu::CommandEncoderDescriptor encoderDescriptor{.label = "Aux window encoder"};
++  const auto encoder = webgpu::g_device.CreateCommandEncoder(&encoderDescriptor);
++  const std::array attachments{
++      wgpu::RenderPassColorAttachment{
++          .view = view,
++          .loadOp = wgpu::LoadOp::Clear,
++          .storeOp = wgpu::StoreOp::Store,
++          .clearValue = {0.0, 0.0, 0.0, 1.0},
++      },
++  };
++  const wgpu::RenderPassDescriptor renderPassDescriptor{
++      .label = "Aux window blit pass",
++      .colorAttachmentCount = attachments.size(),
++      .colorAttachments = attachments.data(),
++  };
++  const bool haveSource = source.view && source.width != 0 && source.height != 0 &&
++                          surfaceWidth != 0 && surfaceHeight != 0;
++  // Aspect-fit letterbox; never stretch. Shared by the surface blit and the
++  // capture blit so a screenshot matches the panel pixel for pixel.
++  float viewLeft = 0.f, viewTop = 0.f, viewWidth = 0.f, viewHeight = 0.f;
++  if (haveSource) {
++    const float scale = std::min(static_cast<float>(surfaceWidth) / static_cast<float>(source.width),
++                                 static_cast<float>(surfaceHeight) / static_cast<float>(source.height));
++    viewWidth = static_cast<float>(source.width) * scale;
++    viewHeight = static_cast<float>(source.height) * scale;
++    viewLeft = (static_cast<float>(surfaceWidth) - viewWidth) * 0.5f;
++    viewTop = (static_cast<float>(surfaceHeight) - viewHeight) * 0.5f;
++  }
++  const webgpu::TextureWithSampler sourceBinding{
++      .view = source.view,
++      .sampler = sampler,
++  };
++  // out = src * constant. The letterbox stays at the pass clear (black), so a
++  // full dim reaches true black everywhere.
++  //
++  // NOTE: this multiplies the surface's stored values. best_surface_format()
++  // prefers non-sRGB RGBA8/BGRA8Unorm, so the fade lands on sRGB-ENCODED values
++  // and reads as perceptually linear. On a fallback path that selected an
++  // *UnormSrgb format, WebGPU would blend in linear space and the identical
++  // constant would look like a noticeably slower fade.
++  const float dim = g_dim.load();
++  const double keep = 1.0 - static_cast<double>(dim);
++  const wgpu::Color blendConstant{keep, keep, keep, 1.0};
++  const bool dimmed = dim > 0.001f && webgpu::g_CopyDimPipeline != nullptr;
++
++  // Built once: a capture frame records the same blit into two passes, and
++  // allocating a second identical bind group for the copy was pure waste.
++  const wgpu::BindGroup blitBindGroup =
++      haveSource ? webgpu::create_copy_bind_group(sourceBinding) : wgpu::BindGroup{};
++  const auto record_blit = [&](const wgpu::RenderPassEncoder& pass) {
++    if (!haveSource) {
++      return;
++    }
++    pass.SetPipeline(dimmed ? webgpu::g_CopyDimPipeline : webgpu::g_CopyPipeline);
++    if (dimmed) {
++      pass.SetBlendConstant(&blendConstant);
++    }
++    pass.SetBindGroup(0, blitBindGroup, 0, nullptr);
++    pass.SetViewport(viewLeft, viewTop, viewWidth, viewHeight, 0.f, 1.f);
++    pass.Draw(3);
++  };
++
++  {
++    const auto pass = encoder.BeginRenderPass(&renderPassDescriptor);
++    record_blit(pass);
++    pass.End();
++  }
++
++  // Screenshot: repeat the same blit into an owned CopySrc texture (the
++  // surface texture is RenderAttachment-only) and stage it for read-back.
++  size_t captureMapSize = 0;
++  wgpu::Buffer captureStaging;
++  uint64_t captureGen = 0;
++  uint32_t captureW = 0, captureH = 0, captureBpr = 0;
++  bool captureSwizzle = false;
++  {
++    std::lock_guard captureLock{g_captureMutex};
++    if (g_captureState == CaptureState::Armed && haveSource &&
++        ensure_capture_locked(surfaceWidth, surfaceHeight, surfaceFormat))
++    {
++      const std::array captureAttachments{
++          wgpu::RenderPassColorAttachment{
++              .view = g_captureView,
++              .loadOp = wgpu::LoadOp::Clear,
++              .storeOp = wgpu::StoreOp::Store,
++              .clearValue = {0.0, 0.0, 0.0, 1.0},
++          },
++      };
++      const wgpu::RenderPassDescriptor capturePassDescriptor{
++          .label = "Aux window capture pass",
++          .colorAttachmentCount = captureAttachments.size(),
++          .colorAttachments = captureAttachments.data(),
++      };
++      const auto capturePass = encoder.BeginRenderPass(&capturePassDescriptor);
++      record_blit(capturePass);
++      capturePass.End();
++
++      const wgpu::TexelCopyTextureInfo copySrc{.texture = g_captureTexture};
++      const wgpu::TexelCopyBufferInfo copyDst{
++          .layout =
++              wgpu::TexelCopyBufferLayout{
++                  .bytesPerRow = g_capturePaddedBpr,
++                  .rowsPerImage = g_captureHeight,
++              },
++          .buffer = g_captureStaging,
++      };
++      const wgpu::Extent3D copySize{g_captureWidth, g_captureHeight, 1};
++      encoder.CopyTextureToBuffer(&copySrc, &copyDst, &copySize);
++      g_captureState = CaptureState::InFlight;
++      captureMapSize = static_cast<size_t>(g_capturePaddedBpr) * g_captureHeight;
++      captureStaging = g_captureStaging;
++      captureGen = g_captureGeneration;
++      captureW = g_captureWidth;
++      captureH = g_captureHeight;
++      captureBpr = g_capturePaddedBpr;
++      captureSwizzle = g_captureSwizzleBgr;
++    }
++  }
++
++  const wgpu::CommandBufferDescriptor cmdBufDescriptor{.label = "Aux window command buffer"};
++  const auto buffer = encoder.Finish(&cmdBufDescriptor);
++  webgpu::g_queue.Submit(1, &buffer);
++
++  if (captureMapSize != 0) {
++    // Called OUTSIDE g_captureMutex: the callback takes it, and MapAsync's
++    // error path completes inline under AllowSpontaneous.
++    //
++    // The lambda captures the staging buffer BY VALUE, so it holds its own
++    // reference for as long as the map is outstanding. That is what lets
++    // release_capture_locked() drop the global without destroying the buffer
++    // and triggering an inline aborted callback into a mutex we already hold.
++    // It also snapshots the dimensions, so a resize mid-map cannot make the
++    // unpack read with the wrong stride.
++    // AllowSpontaneous: gfx's per-frame g_instance.ProcessEvents() drives it.
++    captureStaging.MapAsync(
++        wgpu::MapMode::Read, 0, captureMapSize, wgpu::CallbackMode::AllowSpontaneous,
++        [captureStaging, captureGen, captureW, captureH, captureBpr, captureSwizzle](
++            wgpu::MapAsyncStatus status, wgpu::StringView message) {
++          std::lock_guard lock{g_captureMutex};
++          if (captureGen != g_captureGeneration) {
++            // Superseded or released while in flight; nothing to publish.
++            if (status == wgpu::MapAsyncStatus::Success) {
++              captureStaging.Unmap();
++            }
++            return;
++          }
++          if (status != wgpu::MapAsyncStatus::Success) {
++            if (status != wgpu::MapAsyncStatus::CallbackCancelled &&
++                status != wgpu::MapAsyncStatus::Aborted) {
++              Log.warn("Aux capture read-back failed: {}", message);
++            }
++            g_captureState = CaptureState::Idle;
++            return;
++          }
++          const size_t mappedSize = static_cast<size_t>(captureBpr) * captureH;
++          const auto* src =
++              static_cast<const uint8_t*>(captureStaging.GetConstMappedRange(0, mappedSize));
++          if (src != nullptr) {
++            const size_t rowBytes = static_cast<size_t>(captureW) * 4;
++            g_captureData.resize(rowBytes * captureH);
++            for (uint32_t y = 0; y < captureH; ++y) {
++              const uint8_t* in = src + static_cast<size_t>(y) * captureBpr;
++              uint8_t* out = g_captureData.data() + static_cast<size_t>(y) * rowBytes;
++              if (captureSwizzle) {
++                for (uint32_t x = 0; x < captureW; ++x) {
++                  out[x * 4 + 0] = in[x * 4 + 2];
++                  out[x * 4 + 1] = in[x * 4 + 1];
++                  out[x * 4 + 2] = in[x * 4 + 0];
++                  out[x * 4 + 3] = 0xFF;  // the aux surface is opaque
++                }
++              } else {
++                std::memcpy(out, in, rowBytes);
++                for (uint32_t x = 0; x < captureW; ++x) {
++                  out[x * 4 + 3] = 0xFF;
++                }
++              }
++            }
++            g_captureWidth = captureW;
++            g_captureHeight = captureH;
++            g_captureState = CaptureState::Ready;
++          } else {
++            g_captureState = CaptureState::Idle;
++          }
++          captureStaging.Unmap();
++        });
++  }
++
++  const wgpu::ConvertibleStatus status = surface.Present();
++  if (!status) {
++    Log.warn("Aux surface present failed");
++    g_needsConfigure = true;
++  }
++}
++
++} // namespace aurora::auxwin
++
++#endif
+diff --git a/lib/aux_window.hpp b/lib/aux_window.hpp
+new file mode 100644
+index 0000000..fa7bb27
+--- /dev/null
++++ b/lib/aux_window.hpp
+@@ -0,0 +1,19 @@
++#pragma once
++
++#ifdef AURORA_ENABLE_GX
++
++union SDL_Event;
++
++namespace aurora::auxwin {
++
++/// Returns true if the event targets the auxiliary window and was consumed.
++/// Called from the main event loop before regular processing.
++bool filter_event(const SDL_Event& event);
++
++/// Present the auxiliary surface. Render worker thread only, after queue
++/// submit.
++void present();
++
++} // namespace aurora::auxwin
++
++#endif
+diff --git a/lib/gfx/texture_replacement.cpp b/lib/gfx/texture_replacement.cpp
+index 03dda46..deb8898 100644
+--- a/lib/gfx/texture_replacement.cpp
++++ b/lib/gfx/texture_replacement.cpp
+@@ -10,6 +10,8 @@
+ #include "png_io.hpp"
+ #include "texture_convert.hpp"
+ 
++#include <SDL3/SDL_cpuinfo.h>
++#include <SDL3/SDL_platform_defines.h>
+ #include <aurora/texture.hpp>
+ #include <fmt/format.h>
+ #include <tracy/Tracy.hpp>
+@@ -42,7 +44,35 @@ namespace aurora::texture {
+ namespace {
+ constexpr Module Log{"aurora::texture"};
+ 
+-constexpr uint64_t kReplacementCacheBudgetBytes = 4294967296; // 4GB
++// How much GPU memory replacement textures may hold before the LRU starts
++// evicting.
++//
++// This used to be a flat 4 GB, which meant eviction never ran on a phone: the
++// OS kills the process long before a single app reaches 4 GB, so on Android the
++// cache simply grew until the app died. It has to come from the device.
++//
++// A 4x PNG pack costs up to 128x the GPU memory of the GameCube texture it
++// replaces (4 bpp CMPR in, 32 bpp RGBA8 out at 16x the pixels), so the budget
++// is what stands between a large pack and an out-of-memory kill. Android gets a
++// tighter fraction because the figure below is SYSTEM ram, not what one app may
++// have: the per-process limit is a fraction of it, and the GPU shares it.
++uint64_t replacement_cache_budget_bytes() noexcept {
++  static const uint64_t budget = [] {
++    constexpr uint64_t kMiB = 1024ull * 1024ull;
++#if defined(SDL_PLATFORM_ANDROID) || defined(SDL_PLATFORM_IOS)
++    constexpr uint64_t divisor = 12, floorBytes = 128 * kMiB, ceilBytes = 1024 * kMiB;
++#else
++    constexpr uint64_t divisor = 8, floorBytes = 256 * kMiB, ceilBytes = 4096 * kMiB;
++#endif
++    const int ramMiB = SDL_GetSystemRAM();
++    if (ramMiB <= 0) {
++      return floorBytes; // unknown device: assume the small end
++    }
++    const uint64_t share = (static_cast<uint64_t>(ramMiB) * kMiB) / divisor;
++    return std::clamp(share, floorBytes, ceilBytes);
++  }();
++  return budget;
++}
+ constexpr uint64_t kReplacementWildcardTextureHash = kWildcardTextureHash;
+ constexpr uint64_t kReplacementWildcardTlutHash = kWildcardTlutHash;
+ 
+@@ -307,6 +337,10 @@ std::optional<std::pair<uint32_t, uint32_t>> parse_dimensions(std::string_view t
+   return std::pair{*width, *height};
+ }
+ 
++// No legitimate GX texture approaches this; anything larger means the
++// descriptor cannot be trusted (freed or reused ResTIMG).
++constexpr uint32_t kMaxHashableTextureBytes = 64u * 1024u * 1024u;
++
+ uint32_t texture_base_level_size(const GXTexObj_& obj) noexcept {
+   switch (obj.format()) {
+   case GX_TF_R8_PC:
+@@ -329,7 +363,10 @@ ArrayRef<uint8_t> tlut_bytes(const GXTlutObj_& tlut) noexcept {
+ std::optional<uint64_t> compute_referenced_tlut_hash(const GXTexObj_& obj, ArrayRef<uint8_t> tlutData) noexcept {
+   const uint32_t textureSize = texture_base_level_size(obj);
+   const auto* textureData = static_cast<const uint8_t*>(obj.data);
+-  if (!gx::is_palette_format(obj.format()) || !obj.has_data() || textureSize == 0 || tlutData.empty()) {
++  // Same bound as build_source_key_base: this walks textureSize bytes, so a
++  // descriptor with nonsense dimensions would read off the end.
++  if (!gx::is_palette_format(obj.format()) || !obj.has_data() || textureSize == 0 ||
++      textureSize > kMaxHashableTextureBytes || tlutData.empty()) {
+     return std::nullopt;
+   }
+ 
+@@ -402,8 +439,13 @@ TextureSourceKey build_source_key_base(const GXTexObj_& obj) noexcept {
+       .hasTlut = gx::is_palette_format(obj.format()),
+   };
+ 
++  // Bound the hash: the size comes from the texture's declared dimensions, so
++  // a GXTexObj_ pointing at a freed or reused descriptor yields a nonsense
++  // extent (a real crash had XXH64 asked for 1.45 GB from a pointer that
++  // faulted 24 bytes in). An untrustworthy texture gets no replacement rather
++  // than taking the process down.
+   const uint32_t textureSize = texture_base_level_size(obj);
+-  if (obj.has_data() && textureSize != 0) {
++  if (obj.has_data() && textureSize != 0 && textureSize <= kMaxHashableTextureBytes) {
+     key.textureHash = XXH64(obj.data, textureSize, 0);
+   }
+   return key;
+@@ -1034,7 +1076,7 @@ void touch_cached_replacement(decltype(s_cacheByKey)::iterator it) noexcept {
+ }
+ 
+ void evict_replacement_cache_if_needed() noexcept {
+-  while (s_replacementCacheBytes > kReplacementCacheBudgetBytes && !s_replacementLru.empty()) {
++  while (s_replacementCacheBytes > replacement_cache_budget_bytes() && !s_replacementLru.empty()) {
+     const auto key = s_replacementLru.back();
+     const auto cache = s_cacheByKey.find(key);
+     const uint64_t id = cache == s_cacheByKey.end() ? 0 : cache->second.id;
+@@ -1706,6 +1748,8 @@ void shutdown() noexcept {
+   stop_worker_pool();
+ }
+ 
++void on_low_memory() noexcept { clear_replacements(); }
++
+ StreamingStats process_streaming() noexcept {
+   if constexpr (!gx::texture::AsyncTextureReplacements) {
+     return {};
+diff --git a/lib/gfx/texture_replacement.hpp b/lib/gfx/texture_replacement.hpp
+index e99514d..69a2108 100644
+--- a/lib/gfx/texture_replacement.hpp
++++ b/lib/gfx/texture_replacement.hpp
+@@ -17,6 +17,12 @@ struct StreamingStats {
+ };
+ 
+ void shutdown() noexcept;
++/// Drop every cached replacement texture. Wired to SDL_EVENT_LOW_MEMORY: the
++/// replacement cache is by far the largest discretionary allocation the process
++/// holds, so it is the first thing to give back when the OS is under pressure.
++/// Costs a reload of whatever is still on screen; the alternative is being
++/// killed.
++void on_low_memory() noexcept;
+ StreamingStats process_streaming() noexcept;
+ std::optional<ReplacementResult> find_pointer_replacement(const GXTexObj_& obj) noexcept;
+ std::optional<ReplacementResult> find_source_replacement(const GXTexObj_& obj,
+diff --git a/lib/input.cpp b/lib/input.cpp
+index 9101f24..1497185 100644
+--- a/lib/input.cpp
++++ b/lib/input.cpp
+@@ -348,12 +348,30 @@ SDL_JoystickID add_controller(SDL_JoystickID which) noexcept {
+       controller.m_deadZones.emulateTriggers = false;
+     }
+     const auto props = SDL_GetGamepadProperties(ctrl);
+-    controller.m_hasRumble = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, true);
++    // Default FALSE, not true. SDL only ever SETS this property when the
++    // capability is actually present (see e.g. ANDROID_JoystickOpen, which
++    // sets it only when the InputDevice reports a vibrator), so an absent
++    // property means "no rumble" -- defaulting it to true asserted rumble on
++    // every device that does not advertise it.
++    //
++    // That broke Android handhelds outright. Their built-in pad enumerates as
++    // a gamepad whose InputDevice has no vibrator: the motor belongs to the
++    // handheld, not to the input device. With m_hasRumble wrongly true,
++    // should_use_device_rumble() stayed false, so PADControlMotor took the
++    // gamepad path into SDL_RumbleGamepad -> ANDROID_JoystickRumble, which
++    // returns SDL_Unsupported() and does nothing -- while the device's own
++    // vibrator, which works, was never reached. With this false, the same
++    // check now routes to aurora::device::rumble() and the handheld buzzes
++    // without the user having to find "Use Device Haptics" first.
++    controller.m_hasRumble = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RUMBLE_BOOLEAN, false);
+     controller.m_hasRgbLed = SDL_GetBooleanProperty(props, SDL_PROP_GAMEPAD_CAP_RGB_LED_BOOLEAN, false);
+     SDL_JoystickID instance = SDL_GetJoystickID(SDL_GetGamepadJoystick(ctrl));
+-    Log.info("Added controller '{}' (instance {}, vid {:04x}, pid {:04x}, type {})",
++    // rumble= is logged because "no rumble" bug reports are otherwise
++    // indistinguishable from each other: a pad that never advertised the
++    // capability, and one that did but whose motor does nothing.
++    Log.info("Added controller '{}' (instance {}, vid {:04x}, pid {:04x}, type {}, rumble={})",
+              SDL_GetGamepadName(ctrl) != nullptr ? SDL_GetGamepadName(ctrl) : "unknown", instance, controller.m_vid,
+-             controller.m_pid, static_cast<int>(SDL_GetGamepadType(ctrl)));
++             controller.m_pid, static_cast<int>(SDL_GetGamepadType(ctrl)), controller.m_hasRumble);
+     g_GameControllers[instance] = controller;
+     apply_port_preferences();
+     return instance;
+diff --git a/lib/webgpu/gpu.cpp b/lib/webgpu/gpu.cpp
+index b3ae6cd..917c0b7 100644
+--- a/lib/webgpu/gpu.cpp
++++ b/lib/webgpu/gpu.cpp
+@@ -53,6 +53,7 @@ TextureWithSampler g_normalBuffer;
+ // EFB -> XFB copy pipeline
+ static wgpu::BindGroupLayout g_CopyBindGroupLayout;
+ wgpu::RenderPipeline g_CopyPipeline;
++wgpu::RenderPipeline g_CopyDimPipeline;
+ wgpu::RenderPipeline g_CopyPremultipliedAlphaPipeline;
+ wgpu::BindGroup g_CopyBindGroup;
+ static AuroraSampler g_Resampler = SAMPLER_BILINEAR;
+@@ -565,6 +566,26 @@ fn fs_premultiplied_alpha(in: VertexOutput) -> @location(0) vec4<f32> {
+   };
+   g_CopyPremultipliedAlphaPipeline =
+       make_copy_pipeline("XFB Premultiplied Alpha Copy Pipeline", "fs_premultiplied_alpha", &premultipliedAlphaBlend);
++
++  // Same copy, modulated by the pass's blend constant: out = src * constant.
++  // The aux window uses it to darken the second screen at PRESENT time rather
++  // than baking a dim into the captured picture, so the fade keeps running on
++  // frames where the source texture is not refreshed (see aux_window.cpp).
++  const wgpu::BlendState constantModulateBlend{
++      .color =
++          {
++              .operation = wgpu::BlendOperation::Add,
++              .srcFactor = wgpu::BlendFactor::Constant,
++              .dstFactor = wgpu::BlendFactor::Zero,
++          },
++      .alpha =
++          {
++              .operation = wgpu::BlendOperation::Add,
++              .srcFactor = wgpu::BlendFactor::One,
++              .dstFactor = wgpu::BlendFactor::Zero,
++          },
++  };
++  g_CopyDimPipeline = make_copy_pipeline("XFB Dim Copy Pipeline", "fs_opaque", &constantModulateBlend);
+ }
+ 
+ void create_resample_pipeline() {
+@@ -1093,6 +1114,7 @@ void shutdown() {
+   g_CopyBindGroupLayout = {};
+   g_CopyPipeline = {};
+   g_CopyPremultipliedAlphaPipeline = {};
++  g_CopyDimPipeline = {};
+   g_CopyBindGroup = {};
+   g_ResampleBindGroupLayout = {};
+   g_ResamplePipeline = {};
+diff --git a/lib/webgpu/gpu.hpp b/lib/webgpu/gpu.hpp
+index a1ce5c0..39791ac 100644
+--- a/lib/webgpu/gpu.hpp
++++ b/lib/webgpu/gpu.hpp
+@@ -53,6 +53,9 @@ extern TextureWithSampler g_depthBuffer;
+ extern TextureWithSampler g_normalBuffer;
+ extern wgpu::RenderPipeline g_CopyPipeline;
+ extern wgpu::RenderPipeline g_CopyPremultipliedAlphaPipeline;
++/// g_CopyPipeline modulated by the render pass's blend constant (out = src *
++/// constant). Used by the aux window to apply its dim at present time.
++extern wgpu::RenderPipeline g_CopyDimPipeline;
+ extern wgpu::BindGroup g_CopyBindGroup;
+ extern wgpu::Instance g_instance;
+ extern wgpu::AdapterInfo g_adapterInfo;
+diff --git a/lib/window.cpp b/lib/window.cpp
+index 2a4aadf..94c66f4 100644
+--- a/lib/window.cpp
++++ b/lib/window.cpp
+@@ -1,6 +1,8 @@
+ #include "window.hpp"
+ 
+ #ifdef AURORA_ENABLE_GX
++#include "aux_window.hpp"
++#include "gfx/texture_replacement.hpp"
+ #include "imgui.hpp"
+ #include "webgpu/gpu.hpp"
+ #endif
+@@ -157,6 +159,19 @@ bool SDLCALL lifecycle_event_watch(void*, SDL_Event* event) {
+       g_backgrounded.store(false, std::memory_order_relaxed);
+       time::internal::set_pause_reason(time::internal::PauseReason::Background, false);
+       break;
++#endif
++#ifdef AURORA_ENABLE_GX
++    case SDL_EVENT_LOW_MEMORY:
++      // Handled inline rather than deferred to the next frame on purpose: this
++      // arrives from onTrimMemory, which fires hardest while the app is
++      // BACKGROUNDED and drawing nothing, so a frame-boundary hook would hand the
++      // memory back only after the process had already survived — or not.
++      //
++      // Safe off the render thread: the cache holds shared_ptrs to plain Dawn
++      // handles, so releasing them is an atomic refcount drop, and the registry
++      // mutex serialises the maps against the frame path.
++      gfx::texture_replacement::on_low_memory();
++      break;
+ #endif
+     default:
+       break;
+@@ -181,6 +196,9 @@ void process_event(SDL_Event& event) {
+   const bool primaryWindow = targets_primary_window(&event);
+   if (primaryWindow) {
+ #ifdef AURORA_ENABLE_GX
++    if (auxwin::filter_event(event)) {
++      return;
++    }
+     imgui::process_event(event);
+ #endif
+ #ifdef AURORA_ENABLE_RMLUI

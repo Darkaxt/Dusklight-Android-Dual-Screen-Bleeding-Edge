@@ -55,6 +55,66 @@ function Invoke-Captured {
     return [pscustomobject]@{ ExitCode = $code; Lines = @($output) }
 }
 
+function Assert-ArchivePayload {
+    param($Archive, [string]$Container)
+    foreach ($entry in $Archive.Entries) {
+        $name = $entry.FullName.Replace('\', '/').ToLowerInvariant()
+        if ($name -match '\.(iso|gcm|rvz|wbfs|ciso|nkit|wia|otr|o2r|z64|n64|v64|gb|gbc|gba|nds|3ds|cia|sav|srm|sra|gci|eep|fla|state|solarus)$' -or
+            $name -match '(^|/)(save|saves|texture_packs|texture-packs|guides|roms|games)(/|$)') {
+            throw "Forbidden game/personal payload: ${Container}!$($entry.FullName)"
+        }
+        $stream = $entry.Open()
+        try {
+            $magic = [byte[]]::new(4)
+            $read = $stream.Read($magic, 0, 4)
+            if ($read -eq 4 -and $magic[0] -eq 0x50 -and $magic[1] -eq 0x4b -and
+                $magic[2] -in @(3, 5, 7) -and $magic[3] -in @(4, 6, 8)) {
+                $stream.Dispose()
+                $stream = $entry.Open()
+                $nested = [IO.Compression.ZipArchive]::new($stream, [IO.Compression.ZipArchiveMode]::Read, $true)
+                try { Assert-ArchivePayload $nested "${Container}!$($entry.FullName)" }
+                finally { $nested.Dispose() }
+            }
+        } finally { $stream.Dispose() }
+    }
+}
+
+function Assert-Arm64LoadAlignment {
+    param($Entry)
+    $reader = [IO.BinaryReader]::new($Entry.Open())
+    try {
+        $header = $reader.ReadBytes(64)
+        if ($header.Length -ne 64 -or [BitConverter]::ToUInt32($header, 0) -ne 0x464c457f -or
+            $header[4] -ne 2 -or $header[5] -ne 1 -or [BitConverter]::ToUInt16($header, 18) -ne 183) {
+            throw "Invalid arm64 ELF: $($Entry.FullName)"
+        }
+        $offset = [BitConverter]::ToUInt64($header, 32)
+        $size = [BitConverter]::ToUInt16($header, 54)
+        $count = [BitConverter]::ToUInt16($header, 56)
+        if ($offset -lt 64 -or $size -lt 56 -or $count -eq 0 -or
+            ([decimal]$offset + [decimal]$size * $count) -gt $Entry.Length) { throw 'Invalid ELF program headers' }
+        $skip = $offset - 64
+        while ($skip -gt 0) {
+            $chunk = $reader.ReadBytes([int][Math]::Min(16384, $skip))
+            if (-not $chunk.Length) { throw 'Truncated ELF program headers' }
+            $skip -= $chunk.Length
+        }
+        $loads = 0
+        for ($i = 0; $i -lt $count; $i++) {
+            $p = $reader.ReadBytes($size)
+            if ($p.Length -ne $size) { throw 'Truncated ELF LOAD segment' }
+            if ([BitConverter]::ToUInt32($p, 0) -ne 1) { continue }
+            $loads++
+            $align = [BitConverter]::ToUInt64($p, 48)
+            if ($align -lt 16384 -or ($align -band ($align - 1)) -ne 0 -or
+                ([BitConverter]::ToUInt64($p, 8) % 16384) -ne ([BitConverter]::ToUInt64($p, 16) % 16384)) {
+                throw "ELF LOAD segment is not 16 KiB aligned: $($Entry.FullName)"
+            }
+        }
+        if (-not $loads) { throw 'ELF has no LOAD segments' }
+    } finally { $reader.Dispose() }
+}
+
 $resolvedApk = (Resolve-Path -LiteralPath $ApkPath).Path
 $aapt = Resolve-NewestBuildTool -Name 'aapt.exe'
 $zipalign = Resolve-NewestBuildTool -Name 'zipalign.exe'
@@ -85,47 +145,21 @@ Invoke-Captured -Program $zipalign -Arguments @('-c', '-P', '16', '-v', '4', $re
 
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($resolvedApk)
-$temporaryRoot = Join-Path 'D:\Temp' ("dusklight-apk-verify-" + [guid]::NewGuid().ToString('N'))
-New-Item -ItemType Directory -Path $temporaryRoot | Out-Null
 try {
-    $forbiddenExtensions = @('.iso', '.gcm', '.rvz', '.wbfs', '.ciso', '.nkit', '.wia', '.otr', '.o2r', '.sav', '.srm', '.gci')
-    $forbiddenSegments = @('save', 'saves', 'texture_packs', 'texture-packs', 'guides', 'roms', 'games')
-    $payloadViolations = @()
-    foreach ($entry in $archive.Entries) {
-        $normalized = $entry.FullName.Replace('\', '/').ToLowerInvariant()
-        $extension = [IO.Path]::GetExtension($normalized)
-        $segments = @($normalized.Split('/', [StringSplitOptions]::RemoveEmptyEntries))
-        if ($forbiddenExtensions -contains $extension -or ($segments | Where-Object { $forbiddenSegments -contains $_ })) {
-            $payloadViolations += $entry.FullName
-        }
-    }
-    if ($payloadViolations.Count -gt 0) {
-        throw "Forbidden copyrighted or personal payload entries found: $($payloadViolations -join ', ')"
-    }
-
+    Assert-ArchivePayload $archive 'APK'
     foreach ($abi in $ExpectedAbis) {
         $entryName = "lib/$abi/libmain.so"
         $entry = $archive.GetEntry($entryName)
         if (-not $entry) {
             throw "Missing native library: $entryName"
         }
-        $destination = Join-Path $temporaryRoot ("libmain-$abi.so")
-        [IO.Compression.ZipFileExtensions]::ExtractToFile($entry, $destination, $true)
-        $programHeaders = (Invoke-Captured -Program $readelf -Arguments @('-lW', $destination)).Lines
-        $loadHeaders = @($programHeaders | Where-Object { $_ -match '^\s*LOAD\s+' })
-        if ($loadHeaders.Count -eq 0) {
-            throw "No ELF LOAD segments found for $abi."
-        }
-        foreach ($header in $loadHeaders) {
-            if ($header -notmatch '\s0x([0-9a-fA-F]+)\s*$' -or [Convert]::ToInt64($Matches[1], 16) -lt 0x4000) {
-                throw "ELF LOAD segment is not 16 KiB aligned for ${abi}: $header"
-            }
-        }
+    }
+    foreach ($entry in @($archive.Entries | Where-Object FullName -match '^lib/arm64-v8a/[^/]+\.so$')) {
+        Assert-Arm64LoadAlignment $entry
     }
 }
 finally {
     $archive.Dispose()
-    Remove-Item -LiteralPath $temporaryRoot -Recurse -Force
 }
 
 $signature = Invoke-Captured -Program $apksigner -Arguments @('verify', '--verbose', '--print-certs', $resolvedApk) -AcceptFailure
