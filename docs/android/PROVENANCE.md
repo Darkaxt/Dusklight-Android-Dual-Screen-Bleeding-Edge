@@ -59,6 +59,13 @@ image, save data, texture pack, cached guide page, or other copyrighted game
 payload. Release verification scans all APK paths, including nested asset paths,
 for those payload classes.
 
+The maintained Windows entry point follows the reference's Android phone/state
+flags and the official release workflow's separate `dusklight_mods` build. All
+three official bundled code mods are required and recursively verified. The
+native symbol-export scan uses ELF objects (IPO disabled, as in the official
+Android preset); its export manifest and SDK stub are not bypassed. See
+[PARITY.md](PARITY.md) for the current host verification record.
+
 ## Signing and migration
 
 The APK is normalized and signed by the shared Native Android signing worker

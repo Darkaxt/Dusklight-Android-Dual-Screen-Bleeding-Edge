@@ -23,7 +23,7 @@ This checklist records source/host evidence, not unperformed device testing.
 - [x] Folder selection, ROM handling, configuration and save-path identity remain
   preserved; no user data is bundled or moved by this update.
 - [x] Android source contracts check these deliberate platform adaptations.
-- [ ] Arm64 release compilation, signature, payload and 16-KiB verification.
+- [x] Arm64 release compilation, signature, payload and 16-KiB verification.
 
 ## 3. Complete reference dual-screen behavior
 
@@ -38,8 +38,24 @@ selected named functions. Each item below is source-integrated:
 - [x] Null-safe floor face when leaving a dungeon map.
 - [x] Phone companion queued sends, socket ownership and disconnect input release.
 - [x] Single upstream shader-compilation setting, disabled by default.
-- [ ] Exact official Aurora plus versioned overlay compared against the newest
+- [x] Exact official Aurora plus versioned overlay compared against the newest
   reference Aurora tree and verified by release compilation.
 
 Device behavior validation is pending by the updater's explicit no-device contract.
-Unchecked build gates must pass before source or APK publication.
+All listed host gates passed for compiled source
+`6255653f08aab60d45afeaf2716757e40a8d1acb`, version `2.0.3.1` / code `200003001`.
+The complete Android build explicitly enables both phone-companion flags and
+packages all three official bundled mods (`luau_runtime`, `cosmetics`,
+`randomizer`). Both APK-root libraries and native libraries inside mod archives
+passed ELF LOAD 16-KiB verification; the recursive payload scan passed.
+
+Gradle gate `6b6b97e83cca49bfbcee2171d8199b34` reported build/helper exit 0 and
+verified daemon exit. Effective workers=2, no parallel projects, Gradle heap=3GiB;
+there were no Kotlin sources or forked Gradle test tasks. Native Ninja actually
+used `-j 2`, compiler pools depth=2 and linker depth=1; Cargo was limited to 2 jobs.
+The initial legacy forced-IPO setting was removed because stable symgen requires
+native ELF input objects, and the exact native NDK version is forwarded to
+Borealis Gradle. No official export/mod-ABI step was bypassed.
+
+APK SHA-256: `0d05e42e9fbe430aad358bbfb5c66e8140c48f1a132a79004aaa141240555611`.
+Persistent signer: `41f77566128bdee40fd94cbac5cdb14fb1c9d7f20cf0b671b511f5247363e863`.

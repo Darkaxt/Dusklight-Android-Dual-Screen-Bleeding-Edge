@@ -1,5 +1,10 @@
 # Android Dual-Screen Implementation Ledger
 
+This is the historical first-release record from 2026-09-08. For the current
+official v2.0.3 / dual-screen 3.0.3 synchronization, see [PARITY.md](PARITY.md)
+and [PROVENANCE.md](PROVENANCE.md). Historical version/hash evidence below is
+not a claim about the current release.
+
 The authoritative specification for this port is the preserved one-time Dusklight
 implementation checkpoint. This ledger maps that contract to implementation stages;
 it does not replace or weaken the checkpoint.
