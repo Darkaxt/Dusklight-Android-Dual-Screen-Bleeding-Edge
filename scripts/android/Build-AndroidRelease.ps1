@@ -169,6 +169,7 @@ foreach ($target in $targets) {
 
 $env:ANDROID_HOME = $AndroidSdk
 $env:ANDROID_SDK_ROOT = $AndroidSdk
+$env:ANDROID_NDK_VERSION = $NdkVersion
 $env:JAVA_HOME = $JavaHome
 $env:DUSK_ANDROID_BUILD_ROOT = Join-Path $resolvedOutput 'gradle'
 $env:DUSK_ANDROID_JNI_LIBS_DIR = $jniRoot

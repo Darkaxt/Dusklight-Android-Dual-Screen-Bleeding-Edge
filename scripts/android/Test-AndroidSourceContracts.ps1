@@ -106,6 +106,8 @@ Require-Match $buildScript "'--target', 'dusklight_mods'" `
     'The official Android release includes its bundled mod packages.'
 Require-Match $buildScript 'BOREALIS_ENABLE_SENTRY=OFF' `
     'The official Android CI preset disables Sentry.'
+Require-Match $buildScript '\$env:ANDROID_NDK_VERSION\s*=\s*\$NdkVersion' `
+    'Borealis Gradle must receive the exact native NDK identity.'
 Require-Match $hostTests 'dusk_guide_tests' `
     'The host test project must build the GuideConvert tests.'
 Require-Match $hostTests 'dusk_release_version_tests' `
