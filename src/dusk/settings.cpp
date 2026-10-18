@@ -16,7 +16,6 @@ UserSettings g_userSettings = {
         .enableVsync {"video.enableVsync", true},
         .lockAspectRatio {"video.lockAspectRatio", false},
         .enableFpsOverlay {"game.enableFpsOverlay", false},
-        .showPipelineProgress {"video.showPipelineProgress", false},
         // Companion by default: dual-screen is this fork's headline setup,
         // and the overlay falls back to a main-screen corner on its own when
         // no companion display exists (ui/overlay.cpp).
@@ -76,14 +75,6 @@ UserSettings g_userSettings = {
         .enableControllerToasts {"game.enableControllerToasts", true},
         .enableDiscordPresence {"game.enableDiscordPresence", true},
         .menuScalingMode {"game.menuScalingMode", MenuScaling::Wii},
-        .dualScreen {"game.dualScreen", true},
-        .dualScreenHudMode {"game.dualScreenHudMode", kDualHudFunctional},
-        .dualScreenSwap {"game.dualScreenSwap", false},
-        .dualScreenDisplay {"game.dualScreenDisplay", -1},
-        .dualScreenPosX {"game.dualScreenPosX", -1},
-        .dualScreenPosY {"game.dualScreenPosY", -1},
-        .dualScreenHaptics {"game.dualScreenHaptics", true},
-        .configMigration {"game.configMigration", 0},
 
         // Graphics
         .bloomMode {"game.bloomMode", BloomMode::Dusk},
@@ -183,6 +174,14 @@ UserSettings g_userSettings = {
         .enableMoveLinkCombo {"game.enableMoveLinkCombo", false},
         .enableTeleportCombo {"game.enableTeleportCombo", false},
         .lastSelectedGameModeId {"game.lastSelectedGameModeId", gamemode::kVanillaGameModeId},
+        .dualScreen {"game.dualScreen", true},
+        .dualScreenHudMode {"game.dualScreenHudMode", kDualHudFunctional},
+        .dualScreenSwap {"game.dualScreenSwap", false},
+        .dualScreenDisplay {"game.dualScreenDisplay", -1},
+        .dualScreenPosX {"game.dualScreenPosX", -1},
+        .dualScreenPosY {"game.dualScreenPosY", -1},
+        .dualScreenHaptics {"game.dualScreenHaptics", true},
+        .configMigration {"game.configMigration", 0},
         .guideEnabled {"game.guideEnabled", true},
     },
 
@@ -191,7 +190,7 @@ UserSettings g_userSettings = {
         .isoVerification {"backend.isoVerification", DiscVerificationState::Unknown},
         .graphicsBackend {"backend.graphicsBackend", "auto"},
         .skipPreLaunchUI {"backend.skipPreLaunchUI", false},
-        .showPipelineCompilation {"backend.showPipelineCompilation", true},
+        .showPipelineCompilation {"backend.showPipelineCompilation", false},
         .wasPresetChosen {"backend.wasPresetChosen", false},
         .checkForUpdates {"backend.checkForUpdates", true},
         .checkForModUpdates {"backend.checkForModUpdates", true},
@@ -278,7 +277,6 @@ void registerSettings() {
     Register(g_userSettings.video.enableVsync);
     Register(g_userSettings.video.lockAspectRatio);
     Register(g_userSettings.video.enableFpsOverlay);
-    Register(g_userSettings.video.showPipelineProgress);
     Register(g_userSettings.video.fpsOverlayCorner);
     Register(g_userSettings.video.maxFrameRate);
     Register(g_userSettings.video.rememberWindowSize);

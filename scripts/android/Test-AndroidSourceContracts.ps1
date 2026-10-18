@@ -10,7 +10,7 @@ $companion = Get-Content -LiteralPath (Join-Path $javaRoot 'DuskCompanionActivit
 $guide = Get-Content -LiteralPath (Join-Path $javaRoot 'DuskGuideBrowser.java') -Raw
 $gradle = Get-Content -LiteralPath (Join-Path $repoRoot 'platforms\android\app\build.gradle') -Raw
 $gradleSettings = Get-Content -LiteralPath (Join-Path $repoRoot 'platforms\android\settings.gradle') -Raw
-$appInfo = Get-Content -LiteralPath (Join-Path $repoRoot 'include\dusk\app_info.hpp') -Raw
+$appInfo = Get-Content -LiteralPath (Join-Path $repoRoot 'src\dusk\app_info.hpp') -Raw
 $cmake = Get-Content -LiteralPath (Join-Path $repoRoot 'CMakeLists.txt') -Raw
 $adaptedCpp = @(
     Get-Content -LiteralPath (Join-Path $repoRoot 'src\dusk\settings.cpp') -Raw
@@ -70,9 +70,9 @@ Require-Match $gradle 'DUSK_ANDROID_NATIVE_PROPERTIES' `
     'Gradle must consume the external CMake/Borealis native build contract.'
 Require-Match $gradle 'DUSK_ANDROID_RELEASE_ABIS' `
     'Gradle must accept the explicit release ABI contract.'
-Require-Match $appInfo 'UpdateRepoOwner\s*=\s*"Darkaxt"' `
+Require-Match $appInfo 'githubOwner\s*=\s*"Darkaxt"' `
     'The in-app updater must query the maintained Darkaxt repository.'
-Require-Match $appInfo 'UpdateRepoName\s*=\s*"Dusklight-Android-Dual-Screen-Bleeding-Edge"' `
+Require-Match $appInfo 'githubRepo\s*=\s*"Dusklight-Android-Dual-Screen-Bleeding-Edge"' `
     'The in-app updater repository name must match the publication contract.'
 Require-Match $cmake 'DUSK_VERSION_REVISION' `
     'CMake must parse the fourth numeric Android release component.'

@@ -67,7 +67,8 @@ void set_active_token(std::string token) {
     g_activeToken = std::move(token);
 }
 
-const std::string& current_token() {
+std::string current_token() {
+    std::lock_guard lock{g_tokenMutex};
     return g_activeToken;
 }
 

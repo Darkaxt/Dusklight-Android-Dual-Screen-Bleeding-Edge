@@ -57,11 +57,45 @@ foreach ($path in $cmake, $ninja, $toolchain, $strip, $gradle, (Join-Path $JavaH
     }
 }
 
+# Some native dependencies launch nested CMake/Ninja builds and only propagate
+# the generator name. Make the exact SDK-bundled Ninja used above discoverable
+# to those child processes as well.
+$env:PATH = (Split-Path -Parent $ninja) + [IO.Path]::PathSeparator + $env:PATH
+
 $resolvedOutput = [IO.Path]::GetFullPath($OutputRoot)
 New-Item -ItemType Directory -Path $resolvedOutput -Force | Out-Null
 $jniRoot = Join-Path $resolvedOutput 'jni'
 $apkRoot = Join-Path $resolvedOutput 'apk'
 New-Item -ItemType Directory -Path $jniRoot, $apkRoot -Force | Out-Null
+
+$auroraSource = Join-Path $SourceRoot 'extern\aurora'
+$auroraPatch = Join-Path $SourceRoot 'patches\aurora-dualscreen-v2.0.2.patch'
+$auroraOverlay = Join-Path $resolvedOutput 'aurora-source'
+$auroraArchive = Join-Path $resolvedOutput 'aurora-source.tar'
+foreach ($path in $auroraPatch, (Join-Path $auroraSource 'CMakeLists.txt')) {
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Required Aurora source input not found: $path"
+    }
+}
+if (Test-Path -LiteralPath $auroraOverlay) {
+    $resolvedOverlay = [IO.Path]::GetFullPath($auroraOverlay)
+    if (-not $resolvedOverlay.StartsWith($resolvedOutput + [IO.Path]::DirectorySeparatorChar,
+            [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Refusing to replace Aurora overlay outside the build root: $resolvedOverlay"
+    }
+    Remove-Item -LiteralPath $resolvedOverlay -Recurse -Force
+}
+New-Item -ItemType Directory -Path $auroraOverlay -Force | Out-Null
+Invoke-Checked -Program 'git.exe' -Arguments @(
+    '-C', $auroraSource, 'archive', '--format=tar', "--output=$auroraArchive", 'HEAD')
+Invoke-Checked -Program 'tar.exe' -Arguments @('-xf', $auroraArchive, '-C', $auroraOverlay)
+Invoke-Checked -Program 'git.exe' -Arguments @(
+    '-C', $auroraOverlay, 'apply', '--no-index', $auroraPatch)
+foreach ($path in 'include\dolphin\arq.h', 'include\aurora\aux_window.hpp') {
+    if (-not (Test-Path -LiteralPath (Join-Path $auroraOverlay $path) -PathType Leaf)) {
+        throw "Patched Aurora overlay is incomplete: $path"
+    }
+}
 
 $targets = @(
     @{ Abi = 'arm64-v8a'; Rust = 'aarch64-linux-android'; Release = $true }
@@ -86,6 +120,7 @@ foreach ($target in $targets) {
         '-DCMAKE_DISABLE_FIND_PACKAGE_zstd=ON',
         '-DDUSK_ENABLE_SENTRY_NATIVE=OFF',
         "-DDUSK_VERSION_OVERRIDE=$($version.versionName)",
+        "-DDUSK_AURORA_SOURCE_DIR=$auroraOverlay",
         "-DRust_CARGO_TARGET=$($target.Rust)"
     )
     Invoke-Checked -Program $cmake -Arguments @('--build', $buildDir, '--target', 'dusklight', '--config', 'Release')

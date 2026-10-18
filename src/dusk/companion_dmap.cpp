@@ -202,7 +202,7 @@ const ResTIMG* dmapFloorFaceTimgSharp(bool i_wolf) {
 }
 
 const ResTIMG* dmapFloorFaceTimg() {
-    return dmapFloorFaceTimg(daPy_py_c::checkNowWolf());
+    return dmapFloorFaceTimg(companionWolf());
 }
 
 const ResTIMG* dmapFloorBossMarkTimg() {

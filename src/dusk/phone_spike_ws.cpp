@@ -167,7 +167,15 @@ function pollGamepad() {
 requestAnimationFrame(pollGamepad);
 </script></body></html>)HTML";
 
+// g_clientMutex guards only the fd/generation swap and is never held across a
+// send(), so has_client()/client_generation() on the game thread can't stall
+// behind a slow PNG upload. g_sendMutex serializes writes to the socket so a
+// frame is never interleaved with another (or with a Pong). Lock order:
+// g_sendMutex, then g_clientMutex. Only client_receive_loop() close()s a
+// client fd; everyone else shutdown()s it, so its number can't be reused by
+// a new accept() while a reader or writer still holds it.
 std::mutex g_clientMutex;
+std::mutex g_sendMutex;
 int g_clientFd = -1;
 // Bumped each time a NEW client is adopted. The game-thread state senders
 // diff against a last-sent snapshot and send only on change; those snapshots
@@ -484,6 +492,7 @@ bool read_ws_frame(int fd, Opcode& opcodeOut, std::string& payloadOut) {
 }
 
 void send_control_frame(int fd, Opcode opcode, std::string_view payload = {}) {
+    std::lock_guard sendLock{g_sendMutex};
     uint8_t head[2] = {static_cast<uint8_t>(0x80 | static_cast<uint8_t>(opcode)),
         static_cast<uint8_t>(payload.size())};
     send_all(fd, reinterpret_cast<char*>(head), 2);
@@ -702,11 +711,11 @@ void dispatch_message(std::string_view json) {
 // set_client() closed it to make room for a newer connection) — nothing
 // else needs to track or join this thread.
 void client_receive_loop(int fd) {
-    for (;;) {
+    for (bool open = true; open;) {
         Opcode opcode;
         std::string payload;
         if (!read_ws_frame(fd, opcode, payload)) {
-            return;
+            break;
         }
         switch (opcode) {
         case Opcode::Text:
@@ -717,17 +726,31 @@ void client_receive_loop(int fd) {
             break;
         case Opcode::Close:
             send_control_frame(fd, Opcode::Close);
-            return;
+            open = false;
+            break;
         default:
             break;  // binary/pong/continuation: nothing this spike expects
         }
     }
+    // Retire the client right away so has_client() goes false and the pad
+    // passthrough releases whatever the phone was holding when it dropped.
+    {
+        std::lock_guard lock{g_clientMutex};
+        if (g_clientFd == fd) {
+            g_clientFd = -1;
+            set_gamepad_state(GamepadState{});
+        }
+    }
+    // Waits out any in-flight send on this fd before its number is freed.
+    std::lock_guard sendLock{g_sendMutex};
+    close(fd);
 }
 
 void set_client(int fd) {
     std::lock_guard lock{g_clientMutex};
     if (g_clientFd >= 0) {
-        close(g_clientFd);
+        // Its receive thread wakes up and close()s it.
+        shutdown(g_clientFd, SHUT_RDWR);
     }
     g_clientFd = fd;
     if (fd >= 0) {
@@ -942,31 +965,49 @@ static void encode_frame_header(uint8_t opcode, size_t size, uint8_t (&header)[1
     }
 }
 
-// Shared by send_binary_frame/send_text_frame: caller already holds
-// g_clientMutex and has validated g_clientFd >= 0.
-static bool send_frame_locked(uint8_t opcode, const void* data, size_t size) {
+// Drops the client after a failed send — unless a newer one already
+// replaced it. shutdown(), not close(): see g_clientMutex.
+static void drop_client(int fd) {
+    std::lock_guard lock{g_clientMutex};
+    if (g_clientFd == fd) {
+        g_clientFd = -1;
+    }
+    shutdown(fd, SHUT_RDWR);
+}
+
+// Shared by send_binary_frame/send_text_frame. Holds g_sendMutex for the
+// whole frame; g_clientMutex only long enough to read the fd.
+static bool send_frame(uint8_t opcode, const void* data, size_t size) {
+    std::lock_guard sendLock{g_sendMutex};
+    int fd;
+    {
+        std::lock_guard lock{g_clientMutex};
+        fd = g_clientFd;
+    }
+    if (fd < 0) {
+        return false;
+    }
+
     uint8_t header[10];
     size_t headerLen = 0;
     encode_frame_header(opcode, size, header, headerLen);
 
-    const ssize_t hn = send(g_clientFd, header, headerLen, 0);
+    const ssize_t hn = send(fd, header, headerLen, 0);
     if (hn != static_cast<ssize_t>(headerLen)) {
         DuskLog.warn("phone spike: frame header send failed/short, dropping client");
-        close(g_clientFd);
-        g_clientFd = -1;
+        drop_client(fd);
         return false;
     }
     size_t sent = 0;
     const auto* bytes = static_cast<const uint8_t*>(data);
     while (sent < size) {
-        const ssize_t n = send(g_clientFd, bytes + sent, size - sent, 0);
+        const ssize_t n = send(fd, bytes + sent, size - sent, 0);
         if (n <= 0) {
             // Partial frame already on the wire — the client's WS stream is
             // now desynced no matter what we do from here, so the only
             // correct move is to drop the connection, not try to recover.
             DuskLog.warn("phone spike: frame payload send failed/timed out, dropping client");
-            close(g_clientFd);
-            g_clientFd = -1;
+            drop_client(fd);
             return false;
         }
         sent += static_cast<size_t>(n);
@@ -975,19 +1016,11 @@ static bool send_frame_locked(uint8_t opcode, const void* data, size_t size) {
 }
 
 bool send_binary_frame(const void* data, size_t size) {
-    std::lock_guard lock{g_clientMutex};
-    if (g_clientFd < 0) {
-        return false;
-    }
-    return send_frame_locked(0x2, data, size);  // opcode 2 = binary
+    return send_frame(0x2, data, size);  // opcode 2 = binary
 }
 
 bool send_text_frame(std::string_view json) {
-    std::lock_guard lock{g_clientMutex};
-    if (g_clientFd < 0) {
-        return false;
-    }
-    return send_frame_locked(0x1, json.data(), json.size());  // opcode 1 = text
+    return send_frame(0x1, json.data(), json.size());  // opcode 1 = text
 }
 
 // Background sender thread's body: blocks on new raw captures, does the

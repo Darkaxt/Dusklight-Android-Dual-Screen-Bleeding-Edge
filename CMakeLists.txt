@@ -167,7 +167,9 @@ set(AURORA_ENABLE_DVD ON CACHE BOOL "Enable DVD API support" FORCE)
 set(AURORA_ENABLE_CARD ON CACHE BOOL "Enable CARD API support" FORCE)
 set(AURORA_ENABLE_THP ON CACHE BOOL "Enable THP decoder" FORCE)
 set(AURORA_ENABLE_RMLUI ON CACHE BOOL "Enable RmlUi UI support" FORCE)
-add_subdirectory(extern/aurora EXCLUDE_FROM_ALL)
+set(DUSK_AURORA_SOURCE_DIR "${CMAKE_SOURCE_DIR}/extern/aurora" CACHE PATH
+    "Aurora source tree, optionally overlaid with the maintained dual-screen patch")
+add_subdirectory("${DUSK_AURORA_SOURCE_DIR}" "${CMAKE_BINARY_DIR}/extern/aurora" EXCLUDE_FROM_ALL)
 target_compile_definitions(aurora_mtx PRIVATE MTX_USE_PS=1)
 
 add_subdirectory(extern/borealis EXCLUDE_FROM_ALL)

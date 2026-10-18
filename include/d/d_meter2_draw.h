@@ -161,7 +161,6 @@ public:
 
     // Dual-screen: live A/B action labels and cluster visibility, read by the
     // companion dashboard which renders the button cluster on screen two.
-    const ResTIMG* getActionLabelTimg(int i_which);  // 0 = A, 1 = B
     const char* getActionTextA();
     J2DPicture* getButtonBasePicture(int i_which);   // 0 = A, 1 = B, 2 = X, 3 = Y
     J2DPane* getButtonPane(int i_which);             // 0 = A, 1 = B, 2 = X, 3 = Y
@@ -169,7 +168,6 @@ public:
     const char* getActionTextB();
     const char* getActionTextXY(int i_no);
     J2DPane* getMidnaButtonPaneRaw();
-    J2DPicture* getLightDropPicture();
     J2DPane* getButtonCrossPane();
     const char* getDpadLabel(int i_no);
     void drawMidnaPikariAt(f32 i_posX, f32 i_posY);

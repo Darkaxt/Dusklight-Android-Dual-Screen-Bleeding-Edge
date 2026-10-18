@@ -20,7 +20,7 @@ namespace dusk::phone_spike {
 std::string generate_token();
 
 void set_active_token(std::string token);
-const std::string& current_token();
+std::string current_token();
 
 // Best-effort first non-loopback, UP IPv4 address on this machine. Empty
 // string if none found. Spike-simple: on a multi-NIC machine (VPNs, virtual

@@ -612,18 +612,10 @@ static void pollAndPushSpikeState() {
         return;
     }
     s_hudWasReady = true;
-    // Sent directly/synchronously on the game thread, NOT through the
-    // background sender thread queue_raw_frame() uses for binary frames:
-    // these messages are tiny (well under 200 bytes) and sent only on
-    // actual change (rare relative to 15-60fps frame pushes), so a single
-    // blocking send_text_frame() call — already bounded by the existing
-    // 2-second SO_SNDTIMEO in phone_spike_ws.cpp — is very unlikely to be
-    // felt. Confirmed in live testing: a fresh connection gets its first
-    // hud_state within ~60ms, and reconnecting without any underlying value
-    // changing correctly produces silence (the diff-suppression working as
-    // intended, not a stall) — revisit only if this is ever felt to stall
-    // the game thread, mirroring the lesson already learned for the binary
-    // path.
+    // Queued for the background sender like every other text frame. These
+    // are tiny and sent only on change, but an inline send would still wait
+    // behind a PNG upload already on the wire — a game-thread stall on slow
+    // Wi-Fi. Queuing also keeps them in order with the other text frames.
     static companion::HudState s_lastSent;
     static bool s_haveLastSent = false;
     // A new client has no idea what the last-sent snapshot was, and these
@@ -690,7 +682,7 @@ static void pollAndPushSpikeState() {
         {"oxygen", state.oxygenPct},
         {"oxygenVisible", state.oxygenVisible},
     };
-    phone_spike::send_text_frame(j.dump());
+    phone_spike::queue_text_frame(j.dump());
 }
 
 // Archive strings are LATIN-1 (single byte per character — the same
@@ -788,7 +780,7 @@ static void pollAndPushChromeState() {
         {"action", companion::contextActionName(state.contextAction)},
         {"clickable", state.contextClickable},
     };
-    phone_spike::send_text_frame(j.dump());
+    phone_spike::queue_text_frame(j.dump());
 }
 
 // The ITEMS grid's contents — 23 cells of (slot, item, quantity) plus the
@@ -860,7 +852,7 @@ static void pollAndPushInvState() {
         buttonAmmo.push_back(ammoOrNull(state.buttonAmmo[b]));
     }
     j["buttonAmmo"] = std::move(buttonAmmo);
-    phone_spike::send_text_frame(j.dump());
+    phone_spike::queue_text_frame(j.dump());
 }
 
 // Phase 4: the dungeon map, split by update frequency. Unlike

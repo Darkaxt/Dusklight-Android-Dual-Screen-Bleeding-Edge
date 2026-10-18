@@ -198,14 +198,6 @@ struct UserSettings {
         ConfigVar<int> lastWindowWidth;
         ConfigVar<int> lastWindowHeight;
         ConfigVar<int> uiScale;
-
-        // Fork-added settings live at the END of this struct on purpose. Mods are
-        // compiled against upstream's headers, so settings.<group>.<var> bakes in a
-        // byte offset; inserting a member mid-struct silently repoints every later
-        // access in every mod. Dawnlight read a shifted ConfigVar and abort()ed each
-        // frame. Reordering within the struct keeps its size, so siblings are
-        // unaffected -- but only while these stay last. Append here, never above.
-        ConfigVar<bool> showPipelineProgress;
     } video;
 
     struct {

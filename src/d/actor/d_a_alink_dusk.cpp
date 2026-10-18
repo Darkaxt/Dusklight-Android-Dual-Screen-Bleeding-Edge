@@ -109,9 +109,10 @@ bool daAlink_c::checkQuickTransformOK() {
         return false;
     }
 
-    // Ensure Link is not underwater
+    // Ensure Link is not underwater. No error beep here: the companion polls
+    // this every frame to light its transform button, so a beep would repeat
+    // for as long as Link is diving. tryQuickTransform() beeps on a real press.
     if (!checkNoResetFlg0(FLG0_SWIM_UP)) {
-        Z2GetAudioMgr()->seStart(Z2SE_SYS_ERROR, NULL, 0, 0, 1.0f, 1.0f, -1.0f, -1.0f, 0);
         return false;
     }
 

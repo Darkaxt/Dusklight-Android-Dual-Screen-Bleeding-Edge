@@ -13,8 +13,8 @@ namespace dusk {
     inline constexpr borealis::AppInfo AppInfo{
         .orgName = "TwilitRealm",
         .appName = "Dusklight",
-        .githubOwner = "igawa6",
-        .githubRepo = "dusklight",
+        .githubOwner = "Darkaxt",
+        .githubRepo = "Dusklight-Android-Dual-Screen-Bleeding-Edge",
         .discordApplicationId = "1495632471994405035",
     };
 

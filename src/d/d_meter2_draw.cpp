@@ -73,21 +73,6 @@ void dAnchorHudScale(CPaneMgr* i_pane, HudCorner i_corner, f32* io_x, f32* io_y,
 }
 }  // namespace
 
-// The action labels are pre-rendered texture panes (the label texture is
-// swapped per context action). Expose the current texture rather than the
-// pane: pane-level draws inherit animated transforms and render skewed.
-const ResTIMG* dMeter2Draw_c::getActionLabelTimg(int i_which) {
-    CPaneMgr* mgr = i_which == 0 ? mpBTextA : mpBTextB;
-    if (mgr == NULL || mgr->getPanePtr() == NULL || !mgr->getPanePtr()->isVisible()) {
-        return NULL;
-    }
-    J2DPicture* pic = (J2DPicture*)mgr->getPanePtr();
-    if (pic->getTexture(0) == NULL) {
-        return NULL;
-    }
-    return pic->getTexture(0)->getTexInfo();
-}
-
 // First textured picture in a pane subtree. Prefers color textures over
 // intensity ones (formats 0-3): button subtrees start with greyscale drop
 // shadows that would otherwise win.
@@ -240,11 +225,6 @@ J2DPane* dMeter2Draw_c::getMidnaButtonPaneRaw() {
         return NULL;
     }
     return mpButtonMidona->getPanePtr();
-}
-
-// A tear-of-light picture from the vessel layout.
-J2DPicture* dMeter2Draw_c::getLightDropPicture() {
-    return findBestPicture(mpLightDropParent);
 }
 
 // D-pad label strings from the cross HUD textboxes (localized by the game).
