@@ -139,12 +139,20 @@ foreach ($target in $targets) {
         '-DBUILD_SHARED_LIBS=OFF',
         '-DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON',
         '-DCMAKE_DISABLE_FIND_PACKAGE_zstd=ON',
-        '-DDUSK_ENABLE_SENTRY_NATIVE=OFF',
+        '-DBOREALIS_ENABLE_SENTRY=OFF',
+        '-DDUSK_PHONE_SPIKE=ON',
+        '-DDUSK_PHONE_SPIKE_STATE=ON',
         "-DDUSK_VERSION_OVERRIDE=$($version.versionName)",
         "-DDUSK_AURORA_SOURCE_DIR=$auroraOverlay",
         "-DRust_CARGO_TARGET=$($target.Rust)"
     )
     Invoke-Checked -Program $cmake -Arguments @('--build', $buildDir, '--target', 'dusklight', '--config', 'Release', '--parallel', '2')
+    Invoke-Checked -Program $cmake -Arguments @('--build', $buildDir, '--target', 'dusklight_mods', '--config', 'Release', '--parallel', '2')
+    foreach ($mod in 'luau_runtime', 'cosmetics', 'randomizer') {
+        if (-not (Test-Path -LiteralPath (Join-Path $buildDir "bundled_mods\$mod.dusk") -PathType Leaf)) {
+            throw "Official bundled mod was not produced: $mod"
+        }
+    }
     $library = Join-Path $buildDir 'libmain.so'
     if (-not (Test-Path -LiteralPath $library -PathType Leaf)) {
         throw "Native output was not produced: $library"

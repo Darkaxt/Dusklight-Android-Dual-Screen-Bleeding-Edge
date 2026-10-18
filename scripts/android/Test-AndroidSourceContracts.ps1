@@ -98,6 +98,14 @@ Require-Match $cmake 'CMAKE_JOB_POOL_COMPILE\s+dusk_compile' `
     'Native compiler targets must inherit the depth-two Ninja pool.'
 Require-Match $buildScript 'CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF' `
     'The stable symgen export scan requires native ELF objects, not LLVM bitcode.'
+Require-Match $buildScript 'DUSK_PHONE_SPIKE=ON' `
+    'The Android reference preset enables the phone companion.'
+Require-Match $buildScript 'DUSK_PHONE_SPIKE_STATE=ON' `
+    'The Android reference preset enables phone state streaming.'
+Require-Match $buildScript "'--target', 'dusklight_mods'" `
+    'The official Android release includes its bundled mod packages.'
+Require-Match $buildScript 'BOREALIS_ENABLE_SENTRY=OFF' `
+    'The official Android CI preset disables Sentry.'
 Require-Match $hostTests 'dusk_guide_tests' `
     'The host test project must build the GuideConvert tests.'
 Require-Match $hostTests 'dusk_release_version_tests' `

@@ -67,6 +67,9 @@ function Assert-ArchivePayload {
         try {
             $magic = [byte[]]::new(4)
             $read = $stream.Read($magic, 0, 4)
+            if ($read -eq 4 -and [BitConverter]::ToUInt32($magic, 0) -eq 0x464c457f) {
+                Assert-Arm64LoadAlignment $entry
+            }
             if ($read -eq 4 -and $magic[0] -eq 0x50 -and $magic[1] -eq 0x4b -and
                 $magic[2] -in @(3, 5, 7) -and $magic[3] -in @(4, 6, 8)) {
                 $stream.Dispose()
@@ -147,6 +150,11 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 $archive = [IO.Compression.ZipFile]::OpenRead($resolvedApk)
 try {
     Assert-ArchivePayload $archive 'APK'
+    foreach ($mod in 'luau_runtime', 'cosmetics', 'randomizer') {
+        if (-not $archive.GetEntry("assets/mods/$mod.dusk")) {
+            throw "Missing official bundled mod: $mod"
+        }
+    }
     foreach ($abi in $ExpectedAbis) {
         $entryName = "lib/$abi/libmain.so"
         $entry = $archive.GetEntry($entryName)

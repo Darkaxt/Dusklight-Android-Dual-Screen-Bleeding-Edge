@@ -21,7 +21,7 @@ function Test-PayloadRejected([byte[]]$Bytes) {
     catch { return $true }
     finally { $archive.Dispose(); $memory.Dispose() }
 }
-function Test-ElfRejected([uint64]$Alignment) {
+function Test-ElfRejected([uint64]$Alignment, [switch]$Nested) {
     $bytes = [byte[]]::new(120)
     [BitConverter]::GetBytes([uint32]0x464c457f).CopyTo($bytes, 0)
     $bytes[4] = 2; $bytes[5] = 1
@@ -31,6 +31,10 @@ function Test-ElfRejected([uint64]$Alignment) {
     [BitConverter]::GetBytes([uint16]1).CopyTo($bytes, 56)
     [BitConverter]::GetBytes([uint32]1).CopyTo($bytes, 64)
     [BitConverter]::GetBytes($Alignment).CopyTo($bytes, 112)
+    if ($Nested) {
+        $inner = New-ArchiveBytes 'lib/android-aarch64/mod.so' $bytes
+        return Test-PayloadRejected (New-ArchiveBytes 'assets/mods/fixture.dusk' $inner)
+    }
     $memory = [IO.MemoryStream]::new((New-ArchiveBytes 'lib/arm64-v8a/libmain.so' $bytes))
     $archive = [IO.Compression.ZipArchive]::new($memory, 'Read')
     try { Assert-Arm64LoadAlignment $archive.Entries[0]; return $false }
@@ -49,4 +53,5 @@ Describe 'Android release payload and ELF contracts' {
     }
     It 'rejects 4 KiB native LOAD alignment' { (Test-ElfRejected 4096) | Should Be $true }
     It 'accepts 16 KiB native LOAD alignment' { (Test-ElfRejected 16384) | Should Be $false }
+    It 'rejects 4 KiB ELF LOAD alignment inside a bundled mod' { (Test-ElfRejected 4096 -Nested) | Should Be $true }
 }
