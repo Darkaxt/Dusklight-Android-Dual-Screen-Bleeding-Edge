@@ -132,7 +132,10 @@ foreach ($target in $targets) {
         "-DANDROID_ABI=$($target.Abi)",
         '-DANDROID_PLATFORM=android-28',
         '-DCMAKE_BUILD_TYPE=Release',
-        '-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON',
+        # The stable Android export generator scans ELF objects before linking.
+        # Forcing IPO produces LLVM bitcode that symgen cannot inspect. Match
+        # the official Android preset rather than bypassing its mod ABI scan.
+        '-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF',
         '-DBUILD_SHARED_LIBS=OFF',
         '-DCMAKE_DISABLE_FIND_PACKAGE_PkgConfig=ON',
         '-DCMAKE_DISABLE_FIND_PACKAGE_zstd=ON',

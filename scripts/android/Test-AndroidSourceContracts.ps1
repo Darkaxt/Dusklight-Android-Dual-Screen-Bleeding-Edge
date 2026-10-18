@@ -96,6 +96,8 @@ Reject-Match $buildScript 'Invoke-Checked -Program \$gradle -Arguments' `
     'The desktop release entry point must not bypass the required Gradle gate.'
 Require-Match $cmake 'CMAKE_JOB_POOL_COMPILE\s+dusk_compile' `
     'Native compiler targets must inherit the depth-two Ninja pool.'
+Require-Match $buildScript 'CMAKE_INTERPROCEDURAL_OPTIMIZATION=OFF' `
+    'The stable symgen export scan requires native ELF objects, not LLVM bitcode.'
 Require-Match $hostTests 'dusk_guide_tests' `
     'The host test project must build the GuideConvert tests.'
 Require-Match $hostTests 'dusk_release_version_tests' `
